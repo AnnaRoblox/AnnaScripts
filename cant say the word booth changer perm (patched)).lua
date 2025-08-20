@@ -1,5 +1,6 @@
 -- made by anna
 -- change text here to your text and no you cant make it faster if you remove the wait itll crash your device
+-- no longer works
 local Players = game:GetService('Players')
 local LocalPlayer = Players.LocalPlayer
 

@@ -6278,7 +6278,7 @@ local TeleportCheck = false
 Players.LocalPlayer.OnTeleport:Connect(function(State)
 	if KeepInfYield and (not TeleportCheck) and queueteleport then
 		TeleportCheck = true
-		queueteleport("loadstring(game:HttpGet('https://raw.githubusercontent.com/joshclark756/joshclark756-s-scripts/refs/heads/main/custom%20iy'))()")
+		queueteleport("loadstring(game:HttpGet('https://github.com/AnnaRoblox/AnnaScripts/raw/refs/heads/main/customized%20iy.lua'))()")
 	end
 end)
 

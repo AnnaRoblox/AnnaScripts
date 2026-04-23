@@ -1,4 +1,3 @@
-wait(2)
 if IY_LOADED and not _G.IY_DEBUG == true then
     -- error("Infinite Yield is already running!", 0)
     return
@@ -8485,20 +8484,61 @@ addcmd('chardeleteclass',{'charremoveclass','chardeleteclassname','charremovecla
 	notify('Item(s) Deleted','Deleted items with ClassName ' ..getstring(1))
 end)
 
-addcmd('deletevelocity',{'dv','removevelocity','removeforces'},function(args, speaker)
-	for i,v in pairs(speaker.Character:GetDescendants()) do
-		if v:IsA("BodyVelocity") or v:IsA("BodyGyro") or v:IsA("RocketPropulsion") or v:IsA("BodyThrust") or v:IsA("BodyAngularVelocity") or v:IsA("AngularVelocity") or v:IsA("BodyForce") or v:IsA("VectorForce") or v:IsA("LineForce") then
-			v:Destroy()
-		end
-	end
+addcmd('deletevelocity', {'dv', 'removevelocity', 'removeforces'}, function(args, speaker)
+    local char = speaker.Character
+    if not char then return end
+
+    -- 1. Remove all physics force objects
+    for _, v in ipairs(char:GetDescendants()) do
+        if v:IsA("BodyVelocity") or v:IsA("BodyGyro") or v:IsA("RocketPropulsion") or 
+           v:IsA("BodyThrust") or v:IsA("BodyAngularVelocity") or v:IsA("AngularVelocity") or 
+           v:IsA("BodyForce") or v:IsA("VectorForce") or v:IsA("LineForce") then
+            v:Destroy()
+        end
+    end
+
+    -- 2. Stop current momentum by setting velocity properties to zero
+    for _, v in ipairs(char:GetDescendants()) do
+        if v:IsA("BasePart") then
+            v.Velocity = Vector3.new(0, 0, 0)
+            v.RotVelocity = Vector3.new(0, 0, 0)
+            -- Support for newer Assembly properties if available
+            if pcall(function() return v.AssemblyLinearVelocity end) then
+                v.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                v.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            end
+        end
+    end
+    
+    if notify then
+        notify('Physics Reset', 'All forces removed and velocity set to zero.')
+    end
 end)
 
-addcmd('deleteinvisparts',{'deleteinvisibleparts','dip'},function(args, speaker)
-	for i,v in pairs(workspace:GetDescendants()) do
-		if v:IsA("BasePart") and v.Transparency == 1 and v.CanCollide then
-			v:Destroy()
-		end
-	end
+addcmd('deleteinvisparts', {'deleteinvisibleparts', 'dip'}, function(args, speaker)
+    local count = 0
+    for _, v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("BasePart") then
+            -- We only target parts that are fully invisible and have collision
+            if v.Transparency == 1 and v.CanCollide then
+                -- SAFETY: Exclude critical parts that break the game if deleted
+                local name = v.Name:lower()
+                if name ~= "humanoidrootpart" and name ~= "handle" then
+                    -- Optional: Check if it's a child of a player to be extra safe
+                    local isPlayerPart = v:FindFirstAncestorOfClass("Player") or v:FindFirstAncestorOfClass("Character")
+                    
+                    if not isPlayerPart then
+                        v:Destroy()
+                        count = count + 1
+                    end
+                end
+            end
+        end
+    end
+    
+    if notify then
+        notify('Cleanup Complete', 'Deleted ' .. tostring(count) .. ' invisible parts while preserving RootParts.')
+    end
 end)
 
 local shownParts = {}
@@ -9103,41 +9143,104 @@ addcmd('unloopoof',{},function(args, speaker)
 end)
 
 local notifiedRespectFiltering = false
-addcmd('muteboombox',{},function(args, speaker)
-	if not notifiedRespectFiltering and SoundService.RespectFilteringEnabled then notifiedRespectFiltering = true notify('RespectFilteringEnabled','RespectFilteringEnabled is set to true (the command will still work but may only be clientsided)') end
-	local players = getPlayer(args[1], speaker)
-	if players ~= nil then
-		for i,v in pairs(players) do
-			task.spawn(function()
-				for i, x in next, Players[v].Character:GetDescendants() do
-					if x:IsA("Sound") and x.Playing == true then
-						x.Playing = false
-					end
-				end
-				for i, x in next, Players[v]:FindFirstChildOfClass("Backpack"):GetDescendants() do
-					if x:IsA("Sound") and x.Playing == true then
-						x.Playing = false
-					end
-				end
-			end)
-		end
-	end
+local loopMutedPlayers = {} -- Table to track who is currently loop-muted
+
+addcmd('muteboombox', {}, function(args, speaker)
+    local SoundService = game:GetService("SoundService")
+    local Players = game:GetService("Players")
+
+    if not notifiedRespectFiltering and SoundService.RespectFilteringEnabled then 
+        notifiedRespectFiltering = true 
+        notify('RespectFilteringEnabled', 'RespectFilteringEnabled is set to true (the command will still work but may only be clientsided)') 
+    end
+
+    local players = getPlayer(args[1], speaker)
+    local isLoop = (args[2] and (args[2]:lower() == "l" or args[2]:lower() == "loop"))
+
+    if players ~= nil then
+        for _, v in pairs(players) do
+            local targetPlayer = Players[v]
+            if not targetPlayer then continue end
+
+            -- Function to silence all sounds on a player
+            local function silence(plr)
+                if plr.Character then
+                    for _, x in next, plr.Character:GetDescendants() do
+                        if x:IsA("Sound") and x.Playing then
+                            x.Playing = false
+                        end
+                    end
+                end
+                local backpack = plr:FindFirstChildOfClass("Backpack")
+                if backpack then
+                    for _, x in next, backpack:GetDescendants() do
+                        if x:IsA("Sound") and x.Playing then
+                            x.Playing = false
+                        end
+                    end
+                end
+            end
+
+            -- Initial silence
+            silence(targetPlayer)
+
+            -- Set up loop if requested
+            if isLoop then
+                if loopMutedPlayers[targetPlayer.UserId] then
+                    loopMutedPlayers[targetPlayer.UserId] = false -- Reset existing loop if any
+                    task.wait()
+                end
+
+                loopMutedPlayers[targetPlayer.UserId] = true
+                task.spawn(function()
+                    while loopMutedPlayers[targetPlayer.UserId] and targetPlayer.Parent do
+                        silence(targetPlayer)
+                        task.wait(1) -- Scans every second for new sounds/boomboxes
+                    end
+                    loopMutedPlayers[targetPlayer.UserId] = nil
+                end)
+                
+                if notify then notify('Loop Mute', 'Now loop muting: ' .. targetPlayer.Name) end
+            end
+        end
+    end
 end)
 
-addcmd('unmuteboombox',{},function(args, speaker)
-	if not notifiedRespectFiltering and SoundService.RespectFilteringEnabled then notifiedRespectFiltering = true notify('RespectFilteringEnabled','RespectFilteringEnabled is set to true (the command will still work but may only be clientsided)') end
-	local players = getPlayer(args[1], speaker)
-	if players ~= nil then
-		for i,v in pairs(players) do
-			task.spawn(function()
-				for i, x in next, Players[v].Character:GetDescendants() do
-					if x:IsA("Sound") and x.Playing == false then
-						x.Playing = true
-					end
-				end
-			end)
-		end
-	end
+addcmd('unmuteboombox', {}, function(args, speaker)
+    local Players = game:GetService("Players")
+    local players = getPlayer(args[1], speaker)
+    
+    if players ~= nil then
+        for _, v in pairs(players) do
+            local targetPlayer = Players[v]
+            if not targetPlayer then continue end
+
+            -- Stop the loop if it exists
+            loopMutedPlayers[targetPlayer.UserId] = false
+            
+            -- Re-enable sounds
+            task.spawn(function()
+                if targetPlayer.Character then
+                    for _, x in next, targetPlayer.Character:GetDescendants() do
+                        if x:IsA("Sound") and not x.Playing then
+                            x.Playing = true
+                        end
+                    end
+                end
+                
+                local backpack = targetPlayer:FindFirstChildOfClass("Backpack")
+                if backpack then
+                    for _, x in next, backpack:GetDescendants() do
+                        if x:IsA("Sound") and not x.Playing then
+                            x.Playing = true
+                        end
+                    end
+                end
+            end)
+            
+            if notify then notify('Unmuted', 'Unmuted boomboxes for: ' .. targetPlayer.Name) end
+        end
+    end
 end)
 
 addcmd('reset',{},function(args, speaker)
@@ -9163,31 +9266,73 @@ end)
 
 
 
-addcmd('respawn',{},function(args, speaker)
-	local character = game.Players.LocalPlayer.Character
-                if not character then return end
-                local h = character:FindFirstChild("HumanoidRootPart")
-                if not h then return end
+addcmd('respawn', {}, function(args, speaker)
+    local player = game.Players.LocalPlayer
+    local character = player.Character
+    if not character then return end
+    
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
 
-                local cam = workspace.CurrentCamera
-                if replicatesignal then
-                    replicatesignal(game.Players.LocalPlayer.ConnectDiedSignalBackend)
-                else
-                    print("Can't do InstantRespawn because replicatesignal function not supported")
-                    return
+    -- Save the location BEFORE we die/respawn so we know where to go back to
+    local savedCFrame = root.CFrame
+    local cam = workspace.CurrentCamera
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    
+    if replicatesignal then
+        -- Instant Respawn Method
+        replicatesignal(player.ConnectDiedSignalBackend)
+        
+        if humanoid then
+            humanoid:ChangeState(15)
+        end
+        
+        task.wait(0.5)
+        
+        -- Refresh character reference for the instant respawn
+        local newChar = player.Character
+        if newChar and newChar:FindFirstChild("HumanoidRootPart") then
+            newChar.HumanoidRootPart.CFrame = savedCFrame
+        end
+        
+        workspace.CurrentCamera = cam
+        task.wait(5)
+        execCmd('flashback')
+    else
+        -- Fallback Method (Normal Death)
+        print("replicatesignal not supported. Using health-check fallback.")
+        
+        if humanoid then
+            humanoid.Health = 0
+        end
+
+        -- Wait for the character to actually be alive and healthy again
+        local respawned = false
+        repeat
+            task.wait(0.1)
+            local currentChar = player.Character
+            if currentChar then
+                local currentHum = currentChar:FindFirstChildOfClass("Humanoid")
+                local currentRoot = currentChar:FindFirstChild("HumanoidRootPart")
+                -- Check if character is loaded, has a root part, and is at full health
+                if currentHum and currentHum.Health >= currentHum.MaxHealth and currentRoot then
+                    respawned = true
                 end
-                
-                local humanoid = character:FindFirstChildOfClass("Humanoid")
-                if humanoid then
-                    humanoid:ChangeState(15)
-                end
-                wait(0.5)
-                if character and character:FindFirstChild("HumanoidRootPart") then
-                    character.HumanoidRootPart.CFrame = h.CFrame
-                end
-                workspace.CurrentCamera = cam
-         wait(5)
-         execCmd('flashback')
+            end
+        until respawned
+
+        -- Now that we are back and alive, move back to the old spot
+        local newRoot = player.Character:FindFirstChild("HumanoidRootPart")
+        if newRoot then
+            newRoot.CFrame = savedCFrame
+        end
+        
+        workspace.CurrentCamera = cam
+        
+        -- Small extra delay to let things settle before flashback
+        task.wait(2) 
+        execCmd('flashback')
+    end
 end)
 
 addcmd('refresh',{'re'},function(args, speaker)
@@ -11023,19 +11168,73 @@ addcmd('noroot',{'removeroot','rroot'},function(args, speaker)
 	end
 end)
 
-addcmd('replaceroot',{'replacerootpart'},function(args, speaker)
-	if speaker.Character ~= nil and speaker.Character:FindFirstChild("HumanoidRootPart") then
-		local Char = speaker.Character
-		local OldParent = Char.Parent
-		local HRP = Char and Char:FindFirstChild("HumanoidRootPart")
-		local OldPos = HRP.CFrame
-		Char.Parent = game
-		local HRP1 = HRP:Clone()
-		HRP1.Parent = Char
-		HRP = HRP:Destroy()
-		HRP1.CFrame = OldPos
-		Char.Parent = OldParent
-	end
+local rootreplaced = false
+local originalRoot = nil
+
+addcmd('replaceroot', {'replacerootpart'}, function(args, speaker)
+    local char = speaker.Character
+    if not char then return end
+    
+    local humanoid = char:FindFirstChildWhichIsA("Humanoid")
+    
+    if not rootreplaced then
+        -- == REPLACE THE ROOT ==
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local oldParent = char.Parent
+            local oldPos = hrp.CFrame
+            
+            -- Store the original
+            originalRoot = hrp
+            rootreplaced = true
+            
+            -- Parent character away to avoid physics updates during swap
+            char.Parent = game
+            
+            -- Clone the root and swap
+            local newHrp = hrp:Clone()
+            newHrp.Name = "HumanoidRootPart"
+            newHrp.Parent = char
+            
+            -- Move the original to safety
+            hrp.Parent = nil
+            
+            -- Finish up
+            newHrp.CFrame = oldPos
+            char.Parent = oldParent
+            
+            if notify then
+                notify('Root Replaced', 'Original Root Part has been stashed in nil.')
+            end
+        end
+    else
+        -- == RESTORE THE ROOT ==
+        local currentHrp = char:FindFirstChild("HumanoidRootPart")
+        
+        if originalRoot and currentHrp then
+            local oldParent = char.Parent
+            local oldPos = currentHrp.CFrame
+            
+            char.Parent = game
+            
+            -- Delete the fake root
+            currentHrp:Destroy()
+            
+            -- Put the original back
+            originalRoot.Parent = char
+            originalRoot.CFrame = oldPos
+            
+            char.Parent = oldParent
+            
+            -- Reset state
+            originalRoot = nil
+            rootreplaced = false
+            
+            if notify then
+                notify('Root Restored', 'Original Root Part has been returned to character.')
+            end
+        end
+    end
 end)
 
 addcmd('clearcharappearance',{'clearchar','clrchar'},function(args, speaker)
@@ -11125,81 +11324,131 @@ end)
 
 local RS = RunService.RenderStepped
 addcmd('givetool', {'gt'}, function(args, speaker)
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
+	local Players = game:GetService("Players")
+	local RunService = game:GetService("RunService")
 
--- 1. Get the target player (Keeping your admin system's logic)
-local targetNameInfo = getPlayer(args[1], speaker)
-local targetPlayer = targetNameInfo and Players[targetNameInfo[1]]
+	-- 1. Get the target player
+	local targetNameInfo = getPlayer(args[1], speaker)
+	local targetPlayer = targetNameInfo and Players[targetNameInfo[1]]
+	
+	-- Determine mode: 'a' for attachment, 'c' (or anything else/nil) for CFrame
+	local mode = (args[2] and string.lower(args[2]) == "a") and "a" or "c"
 
-local myChar = speaker.Character
-local targetChar = targetPlayer and targetPlayer.Character
+	local myChar = speaker.Character
+	local targetChar = targetPlayer and targetPlayer.Character
 
-if myChar and targetChar then
-    local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
-    
-    if targetRoot then
-        -- 2. Loop through ALL tools in the character (Handling multiple tools)
-        for _, obj in ipairs(myChar:GetChildren()) do
-            if obj:IsA("Tool") and obj:FindFirstChild("Handle") then
-                
-                -- Use task.spawn so we can handle multiple tools at once without waiting for one to finish
-                task.spawn(function()
-                    local tool = obj
-                    local handle = tool.Handle
+	if myChar and targetChar then
+		local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
+		
+		if targetRoot then
+			-- 2. Loop through ALL tools in the character
+			for _, obj in ipairs(myChar:GetChildren()) do
+				if obj:IsA("Tool") and obj:FindFirstChild("Handle") then
+					
+					task.spawn(function()
+						local tool = obj
+						local handle = tool.Handle
 
-                    -- A. Prevent Speaker Pickup
-                    -- We turn off CanTouch immediately so the speaker's collision doesn't grab it back
-                    handle.CanTouch = false
+						-- A. Prevent Speaker Pickup
+						handle.CanTouch = false
 
-                    -- B. Fix the "TP Player" glitch
-                    -- We look for the weld (RightGrip) that connects the tool to the hand and destroy it manually
-                    -- This ensures the player is physically detached before the tool moves
-                    local rightArm = myChar:FindFirstChild("Right Arm") or myChar:FindFirstChild("RightHand")
-                    if rightArm then
-                        local grip = rightArm:FindFirstChild("RightGrip")
-                        if grip then grip:Destroy() end
-                    end
+						-- B. Fix the "TP Player" glitch
+						local rightArm = myChar:FindFirstChild("Right Arm") or myChar:FindFirstChild("RightHand")
+						if rightArm then
+							local grip = rightArm:FindFirstChild("RightGrip")
+							if grip then grip:Destroy() end
+						end
 
-                    -- C. Drop and Reset Physics
-                    tool.Parent = workspace
-                    handle.Velocity = Vector3.zero
-                    handle.RotVelocity = Vector3.zero
-                    
-                    -- D. Teleport Loop
-                    local connection
-                    local startTime = tick()
-                    
-                    connection = RunService.Heartbeat:Connect(function()
-                        -- Break if tool is gone, picked up (parent changed), or target lost
-                        if not tool or tool.Parent ~= workspace or not targetRoot.Parent then
-                            if connection then connection:Disconnect() end
-                            return
-                        end
-                        
-                        -- Teleport to target
-                        handle.CFrame = targetRoot.CFrame
+						-- C. Drop and Reset Physics
+						tool.Parent = workspace
+						handle.Velocity = Vector3.zero
+						handle.RotVelocity = Vector3.zero
+						
+						if mode == "a" then
+							-- == ATTACHMENT MODE ==
+							local targetAtt = Instance.new("Attachment")
+							targetAtt.Name = "GT_TargetAtt"
+							targetAtt.Parent = targetRoot
 
-                        -- Re-enable CanTouch after a tiny delay so the TARGET can pick it up
-                        -- We wait 0.2 seconds so it's safely away from the speaker
-                        if (tick() - startTime) > 0.2 then
-                            handle.CanTouch = false
-                        end
-                    end)
+							local handleAtt = Instance.new("Attachment")
+							handleAtt.Name = "GT_HandleAtt"
+							handleAtt.Parent = handle
 
-                    -- Timeout safety: Stop forcing it to the player after 3 seconds
-                    task.delay(10, function()
-                        if connection then connection:Disconnect() end
-                        -- Ensure CanTouch is true eventually just in case
-                        if handle then handle.CanTouch = false end 
-                    end)
-                end)
-            end
-        end
-    end
-end
+							local alignPos = Instance.new("AlignPosition")
+							alignPos.Attachment0 = handleAtt
+							alignPos.Attachment1 = targetAtt
+							alignPos.Mode = Enum.PositionAlignmentMode.TwoAttachment
+							alignPos.RigidityEnabled = true
+							alignPos.Parent = handle
 
+							local alignOri = Instance.new("AlignOrientation")
+							alignOri.Attachment0 = handleAtt
+							alignOri.Attachment1 = targetAtt
+							alignOri.Mode = Enum.OrientationAlignmentMode.TwoAttachment
+							alignOri.RigidityEnabled = true
+							alignOri.Parent = handle
+
+							-- Cleanup when picked up
+							local pickupConn
+							pickupConn = tool.AncestryChanged:Connect(function(_, newParent)
+								if newParent ~= workspace then
+									if targetAtt then targetAtt:Destroy() end
+									if handleAtt then handleAtt:Destroy() end
+									if alignPos then alignPos:Destroy() end
+									if alignOri then alignOri:Destroy() end
+									if pickupConn then pickupConn:Disconnect() end
+								end
+							end)
+
+							-- Re-enable CanTouch after a tiny delay
+							task.delay(0.2, function()
+								if handle then handle.CanTouch = true end
+							end)
+
+							-- Timeout safety cleanup
+							task.delay(10, function()
+								if handle then handle.CanTouch = true end
+								if targetAtt then targetAtt:Destroy() end
+								if handleAtt then handleAtt:Destroy() end
+								if alignPos then alignPos:Destroy() end
+								if alignOri then alignOri:Destroy() end
+								if pickupConn then pickupConn:Disconnect() end
+							end)
+							
+						else
+							-- == CFRAME MODE (DEFAULT) ==
+							local connection
+							local startTime = tick()
+							
+							connection = RunService.Heartbeat:Connect(function()
+								-- Break if tool is gone, picked up, or target lost
+								if not tool or tool.Parent ~= workspace or not targetRoot.Parent then
+									if connection then connection:Disconnect() end
+									return
+								end
+								
+								-- Teleport to target
+								handle.CFrame = targetRoot.CFrame
+
+								-- Re-enable CanTouch after a tiny delay
+								if (tick() - startTime) > 0.2 then
+									handle.CanTouch = false
+								end
+							end)
+
+							-- Timeout safety
+							task.delay(10, function()
+								if connection then connection:Disconnect() end
+								if handle then handle.CanTouch = true end 
+							end)
+						end
+					end)
+				end
+			end
+		end
+	end
 end)
+
 addcmd('givetools', {'gts'}, function(args, speaker)
 	local Players = game:GetService("Players")
 	local RunService = game:GetService("RunService")
@@ -11209,6 +11458,9 @@ addcmd('givetools', {'gts'}, function(args, speaker)
 	local targetPlayer = targetNameInfo and Players[targetNameInfo[1]]
 	local myChar = speaker.Character
 	local backpack = speaker:FindFirstChild("Backpack")
+	
+	-- Determine mode: 'a' for attachment, 'c' (or anything else/nil) for CFrame
+	local mode = (args[2] and string.lower(args[2]) == "a") and "a" or "c"
 
 	if targetPlayer and targetPlayer.Character and myChar and backpack then
 		local targetRoot = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -11252,29 +11504,82 @@ addcmd('givetools', {'gts'}, function(args, speaker)
 					handle.Velocity = Vector3.zero
 					handle.RotVelocity = Vector3.zero
 
-					-- D. Teleport Loop
-					local connection
-					local startTime = tick()
+					if mode == "a" then
+						-- == ATTACHMENT MODE ==
+						local targetAtt = Instance.new("Attachment")
+						targetAtt.Name = "GTS_TargetAtt"
+						targetAtt.Parent = targetRoot
 
-					connection = RunService.Heartbeat:Connect(function()
-						if not tool or tool.Parent ~= workspace or not targetRoot.Parent then
-							if connection then connection:Disconnect() end
-							return
-						end
+						local handleAtt = Instance.new("Attachment")
+						handleAtt.Name = "GTS_HandleAtt"
+						handleAtt.Parent = handle
 
-						handle.CFrame = targetRoot.CFrame
+						local alignPos = Instance.new("AlignPosition")
+						alignPos.Attachment0 = handleAtt
+						alignPos.Attachment1 = targetAtt
+						alignPos.Mode = Enum.PositionAlignmentMode.TwoAttachment
+						alignPos.RigidityEnabled = true
+						alignPos.Parent = handle
+
+						local alignOri = Instance.new("AlignOrientation")
+						alignOri.Attachment0 = handleAtt
+						alignOri.Attachment1 = targetAtt
+						alignOri.Mode = Enum.OrientationAlignmentMode.TwoAttachment
+						alignOri.RigidityEnabled = true
+						alignOri.Parent = handle
+
+						-- Cleanup when picked up
+						local pickupConn
+						pickupConn = tool.AncestryChanged:Connect(function(_, newParent)
+							if newParent ~= workspace then
+								if targetAtt then targetAtt:Destroy() end
+								if handleAtt then handleAtt:Destroy() end
+								if alignPos then alignPos:Destroy() end
+								if alignOri then alignOri:Destroy() end
+								if pickupConn then pickupConn:Disconnect() end
+							end
+						end)
 
 						-- Allow target to pick up after 0.2s
-						if (tick() - startTime) > 0.2 then
-							handle.CanTouch = false 
-						end
-					end)
+						task.delay(0.2, function()
+							if handle then handle.CanTouch = true end
+						end)
 
-					-- Timeout safety
-					task.delay(3, function()
-						if connection then connection:Disconnect() end
-						if handle then handle.CanTouch = false end
-					end)
+						-- Timeout safety cleanup
+						task.delay(3, function()
+							if handle then handle.CanTouch = true end
+							if targetAtt then targetAtt:Destroy() end
+							if handleAtt then handleAtt:Destroy() end
+							if alignPos then alignPos:Destroy() end
+							if alignOri then alignOri:Destroy() end
+							if pickupConn then pickupConn:Disconnect() end
+						end)
+
+					else
+						-- == CFRAME MODE (DEFAULT) ==
+						local connection
+						local startTime = tick()
+
+						connection = RunService.Heartbeat:Connect(function()
+							if not tool or tool.Parent ~= workspace or not targetRoot.Parent then
+								if connection then connection:Disconnect() end
+								return
+							end
+
+							handle.CFrame = targetRoot.CFrame
+
+							-- Allow target to pick up after 0.2s
+							if (tick() - startTime) > 0.2 then
+								handle.CanTouch = false
+							end
+						end)
+
+						-- Timeout safety
+						task.delay(3, function()
+							if connection then connection:Disconnect() end
+							if handle then handle.CanTouch = true end
+						end)
+					end
 				end)
 				-- Small delay between tools to prevent physics engine lag
 				task.wait(0.05)
@@ -11447,20 +11752,30 @@ addcmd('deletehats',{'nohats','rhats'},function(args, speaker)
 	end
 end)
 
-addcmd('droptools',{'droptool'},function(args, speaker)
-	for i,v in pairs(Players.LocalPlayer.Backpack:GetChildren()) do
-		if v:IsA("Tool") then
-			v.Parent = Players.LocalPlayer.Character
-		end
-	end
-	wait()
-	for i,v in pairs(Players.LocalPlayer.Character:GetChildren()) do
-		if v:IsA("Tool") then
-			v.Parent = workspace
-		end
-	end
-end)
+addcmd('droptools', {'droptool'}, function(args, speaker)
+    local player = game:GetService("Players").LocalPlayer
+    local backpack = player:FindFirstChild("Backpack")
+    local character = player.Character
 
+    if not backpack or not character then return end
+
+    -- 1. Move all droppable tools from Backpack to Character (Equip them)
+    for _, tool in ipairs(backpack:GetChildren()) do
+        if tool:IsA("Tool") and tool.CanBeDropped then
+            tool.Parent = character
+        end
+    end
+
+    -- Small yield to ensure the engine registers the parenting change
+    task.wait()
+
+    -- 2. Move all droppable tools from Character to Workspace
+    for _, tool in ipairs(character:GetChildren()) do
+        if tool:IsA("Tool") and tool.CanBeDropped then
+            tool.Parent = workspace
+        end
+    end
+end)
 addcmd('droppabletools',{},function(args, speaker)
 	if speaker.Character then
 		for _,obj in pairs(speaker.Character:GetChildren()) do
@@ -11661,6 +11976,7 @@ end)
 walkflinging = false
 addcmd("walkfling", {}, function(args, speaker)
     execCmd("unwalkfling")
+    
     local humanoid = speaker.Character:FindFirstChildWhichIsA("Humanoid")
     if humanoid then
         humanoid.Died:Connect(function()
@@ -11668,33 +11984,49 @@ addcmd("walkfling", {}, function(args, speaker)
         end)
     end
 
+    -- Determine the power: Use arg 2 if it's a number, otherwise default to 1,000,000
+    local flingPower = tonumber(args[2]) or 1000000
+
     execCmd("noclip")
     walkflinging = true
-    repeat RunService.Heartbeat:Wait()
-        local character = speaker.Character
-        local root = getRoot(character)
-        local vel, movel = nil, 0.1
-
-        while not (character and character.Parent and root and root.Parent) do
+    
+    -- Using task.spawn so the command doesn't yield the main thread
+    task.spawn(function()
+        local RunService = game:GetService("RunService")
+        local movel = 0.1
+        
+        repeat 
             RunService.Heartbeat:Wait()
-            character = speaker.Character
-            root = getRoot(character)
-        end
+            local character = speaker.Character
+            local root = (character and character:FindFirstChild("HumanoidRootPart")) or (character and character:FindFirstChild("Torso")) or (character and character:FindFirstChild("UpperTorso"))
 
-        vel = root.Velocity
-        root.Velocity = vel * 1000000 + Vector3.new(0, 1000000, 0)
+            if character and character.Parent and root and root.Parent then
+                local vel = root.Velocity
+                
+                -- Apply massive velocity based on flingPower
+                root.Velocity = vel * flingPower + Vector3.new(0, flingPower, 0)
 
-        RunService.RenderStepped:Wait()
-        if character and character.Parent and root and root.Parent then
-            root.Velocity = vel
-        end
+                RunService.RenderStepped:Wait()
+                if character and character.Parent and root and root.Parent then
+                    root.Velocity = vel
+                end
 
-        RunService.Stepped:Wait()
-        if character and character.Parent and root and root.Parent then
-            root.Velocity = vel + Vector3.new(0, movel, 0)
-            movel = movel * -1
-        end
-    until walkflinging == false
+                RunService.Stepped:Wait()
+                if character and character.Parent and root and root.Parent then
+                    root.Velocity = vel + Vector3.new(0, movel, 0)
+                    movel = movel * -1
+                end
+            else
+                -- If character is missing (respawning), wait a bit
+                RunService.Heartbeat:Wait()
+            end
+        until not walkflinging
+    end)
+end)
+
+addcmd("unwalkfling", {}, function(args, speaker)
+    walkflinging = false
+    execCmd("clip")
 end)
 
 addcmd("unwalkfling", {"nowalkfling"}, function(args, speaker)
@@ -11858,11 +12190,101 @@ function kill(speaker,target,fast)
 	end
 end
 
-addcmd('kill',{'fekill'},function(args, speaker)
-	local players = getPlayer(args[1], speaker)
-	for i,v in pairs(players) do
-		kill(speaker,Players[v])
-	end
+addcmd('kill', {'fekill'}, function(args, speaker)
+    local Players = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    
+    -- 1. Get the target players
+    local targetNameInfo = getPlayer(args[1], speaker)
+    if not targetNameInfo then return end
+
+    local myChar = speaker.Character
+    local backpack = speaker:FindFirstChild("Backpack")
+    if not myChar or not backpack then return end
+
+    local humanoid = myChar:FindFirstChildWhichIsA("Humanoid")
+    if not humanoid then return end
+
+    -- 2. Find a suitable "Sword" (Any tool with a TouchInterest in the Handle)
+    local killTool = nil
+    
+    local function isKillTool(obj)
+        if obj:IsA("Tool") then
+            local handle = obj:FindFirstChild("Handle")
+            if handle and handle:FindFirstChildWhichIsA("TouchTransmitter") then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Check Character first (currently equipped), then Backpack
+    for _, item in ipairs(myChar:GetChildren()) do
+        if isKillTool(item) then killTool = item; break end
+    end
+    
+    if not killTool then
+        for _, item in ipairs(backpack:GetChildren()) do
+            if isKillTool(item) then killTool = item; break end
+        end
+    end
+
+    -- 3. Fail if no tool is found
+    if not killTool then
+        if notify then
+            notify('Tool Required', 'You need to have an item in your inventory with a touchinterest to use this command')
+        else
+            print("Tool Required: You need to have an item in your inventory with a touchinterest to use this command")
+        end
+        return
+    end
+
+    -- 4. Execute on all targets found
+    for _, playerName in ipairs(targetNameInfo) do
+        local targetPlayer = Players:FindFirstChild(playerName)
+        if targetPlayer and targetPlayer.Character then
+            local targetChar = targetPlayer.Character
+            local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
+            local targetHum = targetChar:FindFirstChildWhichIsA("Humanoid")
+
+            if targetRoot and targetHum then
+                task.spawn(function()
+                    -- Equip tool if not already held
+                    if killTool.Parent ~= myChar then
+                        humanoid:EquipTool(killTool)
+                    end
+                    
+                    local handle = killTool:FindFirstChild("Handle")
+                    if not handle then return end
+                    
+                    killTool:Activate() -- Initial swing
+
+                    local startTime = tick()
+                    local connection
+                    
+                    connection = RunService.Heartbeat:Connect(function()
+                        local now = tick()
+                        
+                        -- Failsafe/End Conditions:
+                        -- Target dead, Tool gone/unequipped, or 10 seconds passed
+                        if not targetChar.Parent or 
+                           targetHum.Health <= 0 or 
+                           killTool.Parent ~= myChar or 
+                           (now - startTime) > 10 then
+                            
+                            if connection then connection:Disconnect() end
+                            return
+                        end
+
+                        -- The "Kill" Teleport: Snaps target root to our handle
+                        targetRoot.CFrame = handle.CFrame
+                        -- Keep activating in case it's a click-to-damage tool
+                        killTool:Activate() 
+                    end)
+                end)
+            end
+        end
+    end
 end)
 
 addcmd('handlekill', {'hkill'}, function(args, speaker)

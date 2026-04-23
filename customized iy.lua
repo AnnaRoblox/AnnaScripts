@@ -1,3 +1,5 @@
+-- use just the loadstring below to alway be on the latest update
+-- loadstring(game:HttpGet('https://github.com/AnnaRoblox/AnnaScripts/raw/refs/heads/main/customized%20iy.lua 
 if IY_LOADED and not _G.IY_DEBUG == true then
     -- error("Infinite Yield is already running!", 0)
     return

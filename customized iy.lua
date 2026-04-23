@@ -12333,7 +12333,7 @@ addcmd('kill', {'fekill'}, function(args, speaker)
     local humanoid = myChar:FindFirstChildWhichIsA("Humanoid")
     if not humanoid then return end
 
-    -- 2. Find a suitable "Sword" (Any tool with a TouchInterest in the Handle)
+    -- 2. Find a suitable "Sword"
     local function isKillTool(obj)
         if obj:IsA("Tool") then
             local handle = obj:FindFirstChild("Handle")
@@ -12356,22 +12356,21 @@ addcmd('kill', {'fekill'}, function(args, speaker)
 
     if not killTool then
         if notify then
-            notify('Tool Required', 'You need to have an item with a touchinterest to use this command')
+            notify('Tool Required', 'You need an item with a touchinterest.')
         end
         return
     end
 
-    -- 3. Execute on all targets found
+    -- 3. Execute
     for _, playerName in ipairs(targetNameInfo) do
         local targetPlayer = Players:FindFirstChild(playerName)
         if not targetPlayer then continue end
 
-        -- Handle the Loop Toggle
-        if not isLoop then
-            -- If we run the command normally, we stop any existing loop for this player
-            loopKilledPlayers[targetPlayer.UserId] = false
-        else
+        -- Set the state
+        if isLoop then
             loopKilledPlayers[targetPlayer.UserId] = true
+        else
+            loopKilledPlayers[targetPlayer.UserId] = false
         end
 
         task.spawn(function()
@@ -12380,8 +12379,8 @@ addcmd('kill', {'fekill'}, function(args, speaker)
                 local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
                 local targetHum = targetChar and targetChar:FindFirstChildWhichIsA("Humanoid")
 
+                -- Only attempt if the target is alive and exists
                 if targetRoot and targetHum and targetHum.Health > 0 then
-                    -- Equip tool if not held
                     if killTool.Parent ~= myChar then
                         humanoid:EquipTool(killTool)
                     end
@@ -12394,14 +12393,21 @@ addcmd('kill', {'fekill'}, function(args, speaker)
                         connection = RunService.Heartbeat:Connect(function()
                             local now = tick()
                             
-                            -- End this specific attack session:
-                            -- Target dead, Tool lost, Loop manually disabled, or 10s timeout
-                            if not targetChar.Parent or 
-                               targetHum.Health <= 0 or 
-                               killTool.Parent ~= myChar or 
-                               (not loopKilledPlayers[targetPlayer.UserId] and not isLoop) or
-                               (now - startTime) > 10 then
-                                
+                            -- Check conditions to stop the teleporting
+                            local shouldStop = not targetChar.Parent or 
+                                               targetHum.Health <= 0 or 
+                                               killTool.Parent ~= myChar or 
+                                               (now - startTime) > 10
+                            
+                            -- If it's a single kill (not looping), and we've already run once,
+                            -- we still check the global table in case a loop was cancelled
+                            if not isLoop and loopKilledPlayers[targetPlayer.UserId] == false then
+                                -- Continue normally for this one session
+                            elseif isLoop and loopKilledPlayers[targetPlayer.UserId] == false then
+                                shouldStop = true
+                            end
+
+                            if shouldStop then
                                 if connection then connection:Disconnect() end
                                 return
                             end
@@ -12410,20 +12416,25 @@ addcmd('kill', {'fekill'}, function(args, speaker)
                             killTool:Activate() 
                         end)
 
-                        -- Wait for this specific kill to finish before checking the loop again
-                        while connection and connection.Connected do task.wait() end
+                        -- Yield this thread until the target is dead or session ends
+                        while connection and connection.Connected do 
+                            task.wait() 
+                        end
                     end
                 end
                 
-                -- If looping, wait for them to respawn before the next attempt
+                -- Loop logic: If they are dead, wait for respawn
                 if loopKilledPlayers[targetPlayer.UserId] then
                     task.wait(1)
                 end
-            until not loopKilledPlayers[targetPlayer.UserId]
+                
+                -- If it wasn't a loop, break out after the first session attempt
+                if not isLoop then break end
+                
+            until loopKilledPlayers[targetPlayer.UserId] == false or not targetPlayer.Parent
         end)
     end
 end)
-
 addcmd('handlekill', {'hkill'}, function(args, speaker)
 	if not firetouchinterest then
 		return notify('Incompatible Exploit', 'Your exploit does not support this command (missing firetouchinterest)')

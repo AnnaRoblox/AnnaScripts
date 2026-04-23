@@ -4504,6 +4504,7 @@ CMDs[#CMDs + 1] = {NAME = 'inspect / examine [player]', DESC = 'Opens InspectMen
 CMDs[#CMDs + 1] = {NAME = 'age [player]', DESC = 'Tells you the age of a player'}
 CMDs[#CMDs + 1] = {NAME = 'chatage [player]', DESC = 'Chats the age of a player'}
 CMDs[#CMDs + 1] = {NAME = 'joindate / jd [player]', DESC = 'Tells you the date the player joined Roblox'}
+CMDs[#CMDs + 1] = {NAME = 'stealtool/gettool [player]', DESC = 'steal player held tool (clientsided)'}
 CMDs[#CMDs + 1] = {NAME = 'chatjoindate / cjd [player]', DESC = 'Chats the date the player joined Roblox'}
 CMDs[#CMDs + 1] = {NAME = 'copyname / copyuser [player]', DESC = 'Copies a players full username to your clipboard'}
 CMDs[#CMDs + 1] = {NAME = 'userid / id [player]', DESC = 'Notifies a players user ID'}
@@ -4537,8 +4538,7 @@ CMDs[#CMDs + 1] = {NAME = 'rolewatchleave', DESC = 'Toggle if you should leave t
 CMDs[#CMDs + 1] = {NAME = 'staffwatch', DESC = 'Notify if a staff member of the game joins the server'}
 CMDs[#CMDs + 1] = {NAME = 'unstaffwatch', DESC = 'Disable Staffwatch'}
 CMDs[#CMDs + 1] = {NAME = 'attach [player] (TOOL)', DESC = 'Attaches you to a player (YOU NEED A TOOL)'}
-CMDs[#CMDs + 1] = {NAME = 'kill [player] (TOOL)', DESC = 'Kills a player (YOU NEED A TOOL)'}
-CMDs[#CMDs + 1] = {NAME = 'fastkill [player] (TOOL)', DESC = 'Kills a player (less reliable) (YOU NEED A TOOL)'}
+CMDs[#CMDs + 1] = {NAME = 'kill [player] [add loop to end of command to loop it]', DESC = 'Kills a player using a tool'}
 CMDs[#CMDs + 1] = {NAME = 'handlekill / hkill [player] (TOOL)', DESC = 'Kills a player using tool damage (YOU NEED A TOOL)'}
 CMDs[#CMDs + 1] = {NAME = 'bring [player] (TOOL)', DESC = 'Brings a player (YOU NEED A TOOL)'}
 CMDs[#CMDs + 1] = {NAME = 'fastbring [player] (TOOL)', DESC = 'Brings a player (less reliable) (YOU NEED A TOOL)'}
@@ -6321,7 +6321,6 @@ addcmd('clraliases',{},function(args, speaker)
 	updatesaves()
 	refreshaliases()
 end)
-
 addcmd('discord', {'support', 'help'}, function(args, speaker)
 	if everyClipboard then
 		toClipboard('https://discord.com/invite/dYHag43eeU')
@@ -10283,7 +10282,43 @@ addcmd('tools',{'gears'},function(args, speaker)
 	copy(ReplicatedStorage)
 	notify('Tools','Copied tools from ReplicatedStorage and Lighting')
 end)
+addcmd('gettool', {'stealtool', 'grabtool'}, function(args, speaker)
+    local players = getPlayer(args[1], speaker)
+    local myChar = speaker.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    
+    if not myChar or not myRoot then return end
 
+    for _, v in pairs(players) do
+        local targetPlayer = game.Players:FindFirstChild(v)
+        if targetPlayer and targetPlayer.Character then
+            -- A tool is "in hand" when it is a direct child of the Character
+            local tool = targetPlayer.Character:FindFirstChildOfClass("Tool")
+            
+            if tool then
+                -- 1. If the tool has a handle, we snap it to us first
+                local handle = tool:FindFirstChild("Handle")
+                if handle and handle:IsA("BasePart") then
+                    -- We stop its velocity so it doesn't fly away
+                    handle.Velocity = Vector3.new(0, 0, 0)
+                    handle.CFrame = myRoot.CFrame
+                end
+
+                -- 2. Attempt to change parentage
+                -- Note: This is often client-side only in FE games
+                tool.Parent = myChar
+                
+                if notify then
+                    notify('Tool Grabbed', 'Attempted to take ' .. tool.Name .. ' from ' .. targetPlayer.Name)
+                end
+            else
+                if notify then
+                    notify('Tool Error', targetPlayer.Name .. ' is not holding a tool.')
+                end
+            end
+        end
+    end
+end)
 addcmd('notools',{'rtools','clrtools','removetools','deletetools','dtools'},function(args, speaker)
 	for i,v in pairs(speaker:FindFirstChildOfClass("Backpack"):GetDescendants()) do
 		if v:IsA('Tool') or v:IsA('HopperBin') then
@@ -10475,24 +10510,66 @@ addcmd('headsit',{},function(args, speaker)
 		end)
 	end
 end)
-addcmd('suck',{},function(args, speaker)
-	local players = getPlayer(args[1], speaker)
-	if suck then suck:Disconnect() end
-	for i,v in pairs(players)do
-		speaker.Character:FindFirstChildOfClass('Humanoid').Sit = true
-		suck = RunService.Heartbeat:Connect(function()
-			if Players:FindFirstChild(Players[v].Name) and Players[v].Character ~= nil and getRoot(Players[v].Character) and getRoot(speaker.Character) and speaker.Character:FindFirstChildOfClass('Humanoid').Sit == true then
-				getRoot(speaker.Character).CFrame = getRoot(Players[v].Character).CFrame * CFrame.Angles(0,math.rad(180),0)* CFrame.new(0,-2,0.8)
-			else
-				suck:Disconnect()
-			end
-		end)
-	end
+local suckConnection = nil
+
+addcmd('suck', {}, function(args, speaker)
+    -- 1. Clean up any existing connection first
+    if suckConnection then 
+        suckConnection:Disconnect() 
+        suckConnection = nil
+    end
+
+    local players = getPlayer(args[1], speaker)
+    if not players or #players == 0 then return end
+    
+    -- Target the first player in the result list
+    local targetPlr = Players[players[1]]
+    local myChar = speaker.Character
+    local myHum = myChar and myChar:FindFirstChildOfClass('Humanoid')
+    
+    if not targetPlr or not myHum then return end
+
+    -- Force Sit
+    myHum.Sit = true
+    
+    -- 2. Create the connection
+    suckConnection = RunService.Heartbeat:Connect(function()
+        local targetChar = targetPlr.Character
+        local targetRoot = targetChar and getRoot(targetChar)
+        local myRoot = getRoot(myChar)
+
+        -- Check if conditions are still met
+        -- We check if the connection still exists to prevent "ghost" activations
+        if suckConnection and targetPlr.Parent and targetRoot and myRoot and myHum.Sit == true then
+            myRoot.CFrame = targetRoot.CFrame * CFrame.Angles(0, math.rad(180), 0) * CFrame.new(0, -2, 0.8)
+        else
+            -- 3. Self-cleanup if player gets up or target leaves
+            if suckConnection then
+                suckConnection:Disconnect()
+                suckConnection = nil
+            end
+        end
+    end)
+    
+    if notify then
+        notify('suck', 'sucked to ' .. targetPlr.Name .. '. Stand up to stop.')
+    end
 end)
-addcmd('unsuck',{},function(args, speaker)
-	suck:Disconnect()
-			
-		end)
+
+addcmd('unsuck', {}, function(args, speaker)
+    if suckConnection then
+        suckConnection:Disconnect()
+        suckConnection = nil
+    end
+    
+    local myHum = speaker.Character and speaker.Character:FindFirstChildOfClass('Humanoid')
+    if myHum then
+        myHum.Sit = false
+    end
+    
+    if notify then notify('suck', 'unsucked.') end
+end)
+		
 addcmd('unheadsit',{},function(args, speaker)
 	headSit:Disconnect()
 			
@@ -11269,57 +11346,103 @@ local function GetHandleTools(p)
 	return r
 end
 addcmd('dupetools', {'clonetools'}, function(args, speaker)
-	local LOOP_NUM = tonumber(args[1]) or 1
-	local OrigPos = speaker.Character.HumanoidRootPart.Position
-	local Tools, TempPos = {}, Vector3.new(math.random(-2e5, 2e5), 2e5, math.random(-2e5, 2e5))
-	for i = 1, LOOP_NUM do
-		local Human = speaker.Character:WaitForChild("Humanoid")
-		wait(.1, Human.Parent:MoveTo(TempPos))
-		Human.RootPart.Anchored = speaker:ClearCharacterAppearance(wait(.1)) or true
-		local t = GetHandleTools(speaker)
-		while #t > 0 do
-			for _, v in ipairs(t) do
-				task.spawn(function()
-					for _ = 1, 25 do
-						v.Parent = speaker.Character
-						v.Handle.Anchored = true
-					end
-					for _ = 1, 5 do
-						v.Parent = workspace
-					end
-					table.insert(Tools, v.Handle)
-				end)
-			end
-			t = GetHandleTools(speaker)
-		end
-		wait(.1)
-		speaker.Character = speaker.Character:Destroy()
-		speaker.CharacterAdded:Wait():WaitForChild("Humanoid").Parent:MoveTo(LOOP_NUM == i and OrigPos or TempPos, wait(.1))
-		if i == LOOP_NUM or i % 5 == 0 then
-			local HRP = speaker.Character.HumanoidRootPart
-			if type(firetouchinterest) == "function" then
-				for _, v in ipairs(Tools) do
-					v.Anchored = not firetouchinterest(v, HRP, 1, firetouchinterest(v, HRP, 0)) and false or false
-				end
-			else
-				for _, v in ipairs(Tools) do
-					task.spawn(function()
-						local x = v.CanCollide
-						v.CanCollide = false
-						v.Anchored = false
-						for _ = 1, 10 do
-							v.CFrame = HRP.CFrame
-							wait()
-						end
-						v.CanCollide = x
-					end)
-				end
-			end
-			wait(.1)
-			Tools = {}
-		end
-		TempPos = TempPos + Vector3.new(10, math.random(-5, 5), 0)
-	end
+    local count = tonumber(args[1]) or 4
+    local player = game.Players.LocalPlayer
+    local originalPos
+
+    -- Get initial character and record position
+    local character = player.Character or player.CharacterAdded:Wait()
+    originalPos = character.HumanoidRootPart.CFrame
+
+    for i = 1, count do
+        -- Reacquire current character
+        character = player.Character or player.CharacterAdded:Wait()
+        local oldCharacter = character
+        
+        -- Create temporary block
+        local block = Instance.new("Part")
+        block.CFrame = CFrame.new(9e9, 9e9, 9e9)
+        block.Anchored = true
+        block.Parent = workspace
+
+        -- Teleport to the void block
+        character.HumanoidRootPart.CFrame = block.CFrame
+        task.wait(0.2)
+
+        -- Drop valid tools
+        for _, tool in ipairs(player.Backpack:GetChildren()) do
+            if tool:IsA("Tool") then
+                if tool.CanBeDropped == true 
+                and tool:FindFirstChild("Handle") 
+                and tool.Handle:IsA("BasePart") 
+                and tool.Handle.Transparency < 1 then
+
+                    tool.Parent = character
+                    
+                    local toolBP = Instance.new("BodyPosition")
+                    toolBP.Position = block.Position
+                    toolBP.Parent = tool.Handle
+                    
+                    tool.Handle.Velocity = Vector3.new(25.70, 0, 0)
+                    tool.Handle.RotVelocity = Vector3.new(9e9, 9e9, 9e9)
+                    
+                    tool.Parent = workspace
+                    toolBP:Destroy()
+                end
+            end
+        end
+
+        -- RESPOND LOGIC
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            if replicatesignal then
+                -- Try Instant Respawn
+                pcall(function()
+                    replicatesignal(player.ConnectDiedSignalBackend)
+                    humanoid:ChangeState(15) 
+                end)
+            else
+                -- Fallback to direct health kill
+                humanoid.Health = 0
+            end
+        end
+
+        -- DYNAMIC WAIT: Wait for a fresh character to appear
+        local newCharacter
+        repeat
+            newCharacter = player.Character
+            task.wait()
+        until newCharacter and newCharacter ~= oldCharacter and newCharacter:FindFirstChild("HumanoidRootPart")
+
+        -- Small buffer for the physics engine to settle
+        task.wait(0.1)
+
+        -- Teleport new character back to safety
+        newCharacter.HumanoidRootPart.CFrame = originalPos
+
+        -- Clean up block
+        block:Destroy()
+    end
+
+    -- Final Cleanup: Snap tools to player
+    task.wait(0.5)
+    local finalChar = player.Character
+    if finalChar and finalChar:FindFirstChild("HumanoidRootPart") then
+        for _, tool in ipairs(workspace:GetChildren()) do
+            if tool:IsA("Tool") and tool:FindFirstChild("Handle") then
+                local handle = tool.Handle
+                handle.Velocity = Vector3.new(0, 0, 0)
+                handle.RotVelocity = Vector3.new(0, 0, 0)
+                handle.CFrame = finalChar.HumanoidRootPart.CFrame
+            end
+        end
+    end
+    
+    if notify then
+        notify('Dupe Complete', 'Successfully duplicated tools ' .. tostring(count) .. ' times.')
+    else
+        print("Dupe complete.")
+    end
 end)
 
 local RS = RunService.RenderStepped
@@ -12190,6 +12313,8 @@ function kill(speaker,target,fast)
 	end
 end
 
+local loopKilledPlayers = {} -- Persistent table to track loop-kill states
+
 addcmd('kill', {'fekill'}, function(args, speaker)
     local Players = game:GetService("Players")
     local RunService = game:GetService("RunService")
@@ -12198,6 +12323,7 @@ addcmd('kill', {'fekill'}, function(args, speaker)
     local targetNameInfo = getPlayer(args[1], speaker)
     if not targetNameInfo then return end
 
+    local isLoop = (args[2] and (args[2]:lower() == "l" or args[2]:lower() == "loop"))
     local myChar = speaker.Character
     local backpack = speaker:FindFirstChild("Backpack")
     if not myChar or not backpack then return end
@@ -12206,8 +12332,6 @@ addcmd('kill', {'fekill'}, function(args, speaker)
     if not humanoid then return end
 
     -- 2. Find a suitable "Sword" (Any tool with a TouchInterest in the Handle)
-    local killTool = nil
-    
     local function isKillTool(obj)
         if obj:IsA("Tool") then
             local handle = obj:FindFirstChild("Handle")
@@ -12218,72 +12342,83 @@ addcmd('kill', {'fekill'}, function(args, speaker)
         return false
     end
 
-    -- Check Character first (currently equipped), then Backpack
+    local killTool = nil
     for _, item in ipairs(myChar:GetChildren()) do
         if isKillTool(item) then killTool = item; break end
     end
-    
     if not killTool then
         for _, item in ipairs(backpack:GetChildren()) do
             if isKillTool(item) then killTool = item; break end
         end
     end
 
-    -- 3. Fail if no tool is found
     if not killTool then
         if notify then
-            notify('Tool Required', 'You need to have an item in your inventory with a touchinterest to use this command')
-        else
-            print("Tool Required: You need to have an item in your inventory with a touchinterest to use this command")
+            notify('Tool Required', 'You need to have an item with a touchinterest to use this command')
         end
         return
     end
 
-    -- 4. Execute on all targets found
+    -- 3. Execute on all targets found
     for _, playerName in ipairs(targetNameInfo) do
         local targetPlayer = Players:FindFirstChild(playerName)
-        if targetPlayer and targetPlayer.Character then
-            local targetChar = targetPlayer.Character
-            local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
-            local targetHum = targetChar:FindFirstChildWhichIsA("Humanoid")
+        if not targetPlayer then continue end
 
-            if targetRoot and targetHum then
-                task.spawn(function()
-                    -- Equip tool if not already held
+        -- Handle the Loop Toggle
+        if not isLoop then
+            -- If we run the command normally, we stop any existing loop for this player
+            loopKilledPlayers[targetPlayer.UserId] = false
+        else
+            loopKilledPlayers[targetPlayer.UserId] = true
+        end
+
+        task.spawn(function()
+            repeat
+                local targetChar = targetPlayer.Character
+                local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+                local targetHum = targetChar and targetChar:FindFirstChildWhichIsA("Humanoid")
+
+                if targetRoot and targetHum and targetHum.Health > 0 then
+                    -- Equip tool if not held
                     if killTool.Parent ~= myChar then
                         humanoid:EquipTool(killTool)
                     end
                     
                     local handle = killTool:FindFirstChild("Handle")
-                    if not handle then return end
-                    
-                    killTool:Activate() -- Initial swing
-
-                    local startTime = tick()
-                    local connection
-                    
-                    connection = RunService.Heartbeat:Connect(function()
-                        local now = tick()
+                    if handle then
+                        local startTime = tick()
+                        local connection
                         
-                        -- Failsafe/End Conditions:
-                        -- Target dead, Tool gone/unequipped, or 10 seconds passed
-                        if not targetChar.Parent or 
-                           targetHum.Health <= 0 or 
-                           killTool.Parent ~= myChar or 
-                           (now - startTime) > 10 then
+                        connection = RunService.Heartbeat:Connect(function()
+                            local now = tick()
                             
-                            if connection then connection:Disconnect() end
-                            return
-                        end
+                            -- End this specific attack session:
+                            -- Target dead, Tool lost, Loop manually disabled, or 10s timeout
+                            if not targetChar.Parent or 
+                               targetHum.Health <= 0 or 
+                               killTool.Parent ~= myChar or 
+                               (not loopKilledPlayers[targetPlayer.UserId] and not isLoop) or
+                               (now - startTime) > 10 then
+                                
+                                if connection then connection:Disconnect() end
+                                return
+                            end
 
-                        -- The "Kill" Teleport: Snaps target root to our handle
-                        targetRoot.CFrame = handle.CFrame
-                        -- Keep activating in case it's a click-to-damage tool
-                        killTool:Activate() 
-                    end)
-                end)
-            end
-        end
+                            targetRoot.CFrame = handle.CFrame
+                            killTool:Activate() 
+                        end)
+
+                        -- Wait for this specific kill to finish before checking the loop again
+                        while connection and connection.Connected do task.wait() end
+                    end
+                end
+                
+                -- If looping, wait for them to respawn before the next attempt
+                if loopKilledPlayers[targetPlayer.UserId] then
+                    task.wait(1)
+                end
+            until not loopKilledPlayers[targetPlayer.UserId]
+        end)
     end
 end)
 

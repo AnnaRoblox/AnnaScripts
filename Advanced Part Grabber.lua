@@ -28,7 +28,11 @@ local handle = Instance.new("Part", Tool); handle.Name = "Handle"; handle.Size =
 -- State Variables
 local heldParts, partMemory, rotationMemory = {}, {}, {}
 local activeGui, rightHand = nil, nil
-local isRotationMode, keepOwnership, moveAllMode, presetRepeat, flingMode, autoReclaim, directPlayerFling = false, false, false, false, false, false, false
+local extrasFrame, orbitFrame, followFrame, presetFrame
+local extrasBtn, presetOpenBtn, resetBtn
+local isRotationMode, keepOwnership, moveAllMode, presetRepeat, flingMode, autoReclaim = false, false, false, false, false, false
+local playerFlingEnabled, lockOnEnabled = false, false
+local lockedTargetRoot = nil
 local followHotkey, followKeepPosition, isFollowing = Enum.KeyCode.LeftControl, false, false
 local highlightEnabled = false
 local selectedPartIndex, currentIncrement = 1, 0.2 
@@ -155,15 +159,15 @@ local function createEditGui()
 		return f
 	end
 
-	local extrasFrame = createSubFrame("Extras", UDim2.new(0, 200, 0, 210))
-	local orbitFrame = createSubFrame("Orbit Settings", UDim2.new(0, 200, 0, 220))
-	local followFrame = createSubFrame("Follow Mode", UDim2.new(0, 220, 0, 200))
-	local presetFrame = createSubFrame("Preset Menu", UDim2.new(0, 220, 0, 230))
+	extrasFrame = createSubFrame("Extras", UDim2.new(0, 200, 0, 210))
+	orbitFrame = createSubFrame("Orbit Settings", UDim2.new(0, 200, 0, 220))
+	followFrame = createSubFrame("Follow Mode", UDim2.new(0, 220, 0, 240))
+	presetFrame = createSubFrame("Preset Menu", UDim2.new(0, 220, 0, 230))
 	local statsFrame = createSubFrame("Statistics", UDim2.new(0, 200, 0, 60)); statsFrame.Visible = true; statsFrame.Position = UDim2.new(0, 20, 0, 20)
 	statsLabel = Instance.new("TextLabel", statsFrame); statsLabel.Size = UDim2.new(1, 0, 1, -30); statsLabel.Position = UDim2.new(0, 0, 0, 30); statsLabel.BackgroundTransparency = 1; statsLabel.TextColor3 = Color3.new(1, 1, 1); statsLabel.Font = Enum.Font.GothamBold; statsLabel.TextSize = 12; updateStatsUI()
 
 	local partLabel = Instance.new("TextLabel")
-	local spinToggle, speedFrame, dirFrame, extrasBtn, presetOpenBtn, resetBtn, orbitToggle, orbitSpeedInput, orbitDistInput
+	local spinToggle, speedFrame, dirFrame, orbitToggle, orbitSpeedInput, orbitDistInput
 
 	updateMainLayout = function()
 		local cur = getSelectedPart(); local spinOn = (cur and heldParts[cur]) and heldParts[cur].Spin.Enabled or false
@@ -173,10 +177,9 @@ local function createEditGui()
 
 	updateSelectionDisplay = function()
 		local list = getHeldList(); if #list == 0 then partLabel.Text = "No Parts Held"; selectedPartIndex = 1
-		else if selectedPartIndex > #list then selectedPartIndex = #list end
+		elseif selectedPartIndex > #list then selectedPartIndex = #list end
 			local cur = list[selectedPartIndex]; partLabel.Text = "["..selectedPartIndex.."/"..#list.."] " .. (cur and cur.Name or "Unknown")
-			if heldParts[cur] then updateSpinDisplay(); updateDirDisplay(); updateOrbitDisplay(); updateTypeDisplay() end
-		end
+			if cur and heldParts[cur] then updateSpinDisplay(); updateDirDisplay(); updateOrbitDisplay(); updateTypeDisplay() end
 		updateToggles(); updateMainLayout()
 	end
 
@@ -271,7 +274,9 @@ local function createEditGui()
 	updateTypeDisplay = function() local cur = getSelectedPart(); if cur and heldParts[cur] then tyBtn.Text = "TYPE: "..heldParts[cur].Orbit.Type:upper() end end
 	local hb = createBtn("HOTKEY: "..followHotkey.Name, UDim2.new(0.05, 0, 0, 45), UDim2.new(0.9, 0, 0, 35), followFrame); hb.MouseButton1Click:Connect(function() hb.Text = "PRESS KEY..."; local c; c = UserInputService.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Keyboard then followHotkey = i.KeyCode; hb.Text = "HOTKEY: "..followHotkey.Name; c:Disconnect() end end) end)
 	local kb = createBtn("KEEP POSITION: OFF", UDim2.new(0.05, 0, 0, 90), UDim2.new(0.9, 0, 0, 35), followFrame); local function updateK() kb.Text = "KEEP POSITION: "..(followKeepPosition and "ON" or "OFF"); kb.BackgroundColor3 = followKeepPosition and Color3.fromRGB(40,100,40) or Color3.fromRGB(50,50,50) end; kb.MouseButton1Click:Connect(function() followKeepPosition = not followKeepPosition updateK() end); updateK()
-	local db = createBtn("DIRECT PLAYER FLING: OFF", UDim2.new(0.05, 0, 0, 135), UDim2.new(0.9, 0, 0, 35), followFrame); local function updateD() db.Text = "PLAYER FLING: "..(directPlayerFling and "ON" or "OFF"); db.BackgroundColor3 = directPlayerFling and Color3.fromRGB(150, 80, 0) or Color3.fromRGB(50,50,50) end; db.MouseButton1Click:Connect(function() directPlayerFling = not directPlayerFling updateD() end); updateD()
+	
+	local pfBtn = createBtn("PLAYER FLING: OFF", UDim2.new(0.05, 0, 0, 135), UDim2.new(0.9, 0, 0, 35), followFrame); pfBtn.TextSize = 10; pfBtn.MouseButton1Click:Connect(function() playerFlingEnabled = not playerFlingEnabled; pfBtn.Text = "PLAYER FLING: " .. (playerFlingEnabled and "ON" or "OFF"); pfBtn.BackgroundColor3 = playerFlingEnabled and Color3.fromRGB(150, 50, 50) or Color3.fromRGB(50, 50, 50) end); pfBtn.Text = "PLAYER FLING: " .. (playerFlingEnabled and "ON" or "OFF"); pfBtn.BackgroundColor3 = playerFlingEnabled and Color3.fromRGB(150, 50, 50) or Color3.fromRGB(50, 50, 50)
+	local loBtn = createBtn("LOCK ON: OFF", UDim2.new(0.05, 0, 0, 180), UDim2.new(0.9, 0, 0, 35), followFrame); loBtn.TextSize = 10; loBtn.MouseButton1Click:Connect(function() lockOnEnabled = not lockOnEnabled; loBtn.Text = "LOCK ON: " .. (lockOnEnabled and "ON" or "OFF"); loBtn.BackgroundColor3 = lockOnEnabled and Color3.fromRGB(50, 100, 150) or Color3.fromRGB(50, 50, 50); if not lockOnEnabled then lockedTargetRoot = nil end end); loBtn.Text = "LOCK ON: " .. (lockOnEnabled and "ON" or "OFF"); loBtn.BackgroundColor3 = lockOnEnabled and Color3.fromRGB(50, 100, 150) or Color3.fromRGB(50, 50, 50)
 	
 	local pi = Instance.new("TextBox", presetFrame); pi.Size = UDim2.new(0.9,0,0,30); pi.Position = UDim2.new(0.05,0,0,40); pi.BackgroundColor3 = Color3.fromRGB(40,40,40); pi.TextColor3 = Color3.new(1,1,1); pi.PlaceholderText = "Preset Name..."; pi.Font = Enum.Font.GothamBold; Instance.new("UICorner", pi)
 	local rb = createBtn("REPEAT: OFF", UDim2.new(0.05, 0, 0, 80), UDim2.new(0.9, 0, 0, 30), presetFrame); local function updateRB() rb.Text = "REPEAT: "..(presetRepeat and "ON" or "OFF"); rb.BackgroundColor3 = presetRepeat and Color3.fromRGB(100,100,40) or Color3.fromRGB(50,50,50) end; rb.MouseButton1Click:Connect(function() presetRepeat = not presetRepeat updateRB() end); updateRB()
@@ -300,12 +305,28 @@ RunService.Heartbeat:Connect(function(dt)
 	local char = player.Character; if not char then return end
 	local root = char:FindFirstChild("HumanoidRootPart"); rightHand = char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm"); isFollowing = UserInputService:IsKeyDown(followHotkey); local list = getHeldList()
 	
-	-- Target Check for Player Fling
-	local targetPlayerRoot = nil
-	if isFollowing and flingMode and directPlayerFling and mouse.Target then
+	if not isFollowing then lockedTargetRoot = nil end
+
+	-- Check for player target under mouse
+	local playerTargetRoot = nil
+	if isFollowing and mouse.Target then
 		local isP, pModel = isPlayerPart(mouse.Target)
-		if isP then targetPlayerRoot = pModel:FindFirstChild("HumanoidRootPart") end
+		if isP then 
+			playerTargetRoot = pModel:FindFirstChild("HumanoidRootPart") 
+			if lockOnEnabled then lockedTargetRoot = playerTargetRoot end
+		end
 	end
+
+	-- Lock On Break Conditions
+	if lockedTargetRoot then
+		local breakLock = false
+		if not lockedTargetRoot.Parent or not lockedTargetRoot.Parent:FindFirstChildOfClass("Humanoid") then breakLock = true end
+		if lockedTargetRoot.AssemblyLinearVelocity.Magnitude > 200 then breakLock = true end
+		for target, _ in pairs(heldParts) do if target.ReceiveAge ~= 0 then breakLock = true; break end end
+		if breakLock then lockedTargetRoot = nil end
+	end
+
+	local finalTargetRoot = lockedTargetRoot or playerTargetRoot
 
 	for target, data in pairs(heldParts) do
 		if target and target.Parent and rightHand then
@@ -314,7 +335,7 @@ RunService.Heartbeat:Connect(function(dt)
 				lastReclaim = tick()
 				local oldPos = root.CFrame
 				root.CFrame = target.CFrame
-				task.wait(0.7)
+				task.wait()
 				root.CFrame = oldPos
 			end
 
@@ -330,25 +351,33 @@ RunService.Heartbeat:Connect(function(dt)
 			
 			if data.TargetAtt then 
 				if isFocused and isFollowing then 
-					local targetPos = mouse.Hit.Position
-					
-					-- Override for Direct Player Fling
-					if targetPlayerRoot then
-						-- Oscillate back and forth through the root
-						local swing = math.sin(tick() * 60) * 5
-						targetPos = targetPlayerRoot.Position + (targetPlayerRoot.CFrame.LookVector * swing)
-					end
-
-					data.TargetAtt.WorldCFrame = CFrame.new(targetPos) * offset.Rotation; 
-					if followKeepPosition and not targetPlayerRoot then partMemory[target] = baseCFrame:Inverse() * data.TargetAtt.WorldCFrame end
-					
-					-- Fling Logic
-					if flingMode then
-						local direction = (targetPos - target.Position).Unit
-						local vel = direction * 15000 -- Increased for player flinging
-						for _, p in ipairs(data.AffectedParts) do
-							p.AssemblyLinearVelocity = vel
-							p.AssemblyAngularVelocity = Vector3.new(math.random(-500,500), math.random(-500,500), math.random(-500,500))
+					if playerFlingEnabled then
+						if finalTargetRoot then
+							local swing = math.sin(tick() * 60) * 6
+							local targetPos = finalTargetRoot.Position + (finalTargetRoot.CFrame.LookVector * swing)
+							data.TargetAtt.WorldCFrame = CFrame.new(targetPos) * offset.Rotation
+							local direction = (targetPos - target.Position).Unit
+							local speed = 16000
+							for _, p in ipairs(data.AffectedParts) do
+								p.AssemblyLinearVelocity = direction * speed
+								p.AssemblyAngularVelocity = Vector3.new(math.random(-800,800), math.random(-800,800), math.random(-800,800))
+							end
+						end
+					else
+						local targetPos = mouse.Hit.Position
+						if playerTargetRoot and flingMode then
+							local swing = math.sin(tick() * 60) * 6
+							targetPos = playerTargetRoot.Position + (playerTargetRoot.CFrame.LookVector * swing)
+						end
+						data.TargetAtt.WorldCFrame = CFrame.new(targetPos) * offset.Rotation; 
+						if followKeepPosition and not playerTargetRoot then partMemory[target] = baseCFrame:Inverse() * data.TargetAtt.WorldCFrame end
+						if flingMode then
+							local direction = (targetPos - target.Position).Unit
+							local speed = playerTargetRoot and 16000 or 10000
+							for _, p in ipairs(data.AffectedParts) do
+								p.AssemblyLinearVelocity = direction * speed
+								p.AssemblyAngularVelocity = Vector3.new(math.random(-800,800), math.random(-800,800), math.random(-800,800))
+							end
 						end
 					end
 				elseif isOrbiting then 
@@ -359,13 +388,14 @@ RunService.Heartbeat:Connect(function(dt)
 			end
 			
 			-- Ownership and Fling Cleanup
-			if keepOwnership or (flingMode and isFollowing) then 
+			if keepOwnership or (flingMode and isFollowing) or (playerFlingEnabled and isFollowing and finalTargetRoot) then 
 				for _, p in ipairs(data.AffectedParts) do 
-					if keepOwnership and not (flingMode and isFollowing) then
-						p.Velocity = Vector3.new(14.4626 + (math.random()-0.5), 14.4626, 14.4626) 
+					if keepOwnership and not ((flingMode or playerFlingEnabled) and isFollowing) then
+						local rv = 14.4 + (math.random() * 2.1)
+						p.Velocity = Vector3.new(rv, rv, rv) 
 					end
 				end 
-			elseif flingMode and not isFollowing then
+			elseif (flingMode or playerFlingEnabled) and not isFollowing then
 				for _, p in ipairs(data.AffectedParts) do
 					p.AssemblyLinearVelocity = Vector3.new(0,0,0)
 					p.AssemblyAngularVelocity = Vector3.new(0,0,0)

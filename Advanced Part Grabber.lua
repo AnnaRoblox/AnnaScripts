@@ -1,5 +1,15 @@
 -- Advanced Part Grabber (Multi-Selection & Precision Version)
 local player = game:GetService("Players").LocalPlayer
+
+-- Set Simulation Radius to Max
+task.spawn(function()
+	while task.wait() do
+		pcall(function()
+			player.SimulationRadius = math.huge
+		end)
+	end
+end)
+
 local mouse = player:GetMouse()
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -31,9 +41,71 @@ local activeGui, rightHand = nil, nil
 local extrasFrame, orbitFrame, followFrame, presetFrame
 local extrasBtn, presetOpenBtn, resetBtn
 local isRotationMode, keepOwnership, moveAllMode, presetRepeat, flingMode, autoReclaim = false, false, false, false, false, false
+local autoReclaimStrength = 1
+
+-- Optimized Auto Reclaim Loop
+task.spawn(function()
+	while task.wait() do
+		if autoReclaim then
+			local lostParts = {}
+			for target, _ in pairs(heldParts) do
+				if target.ReceiveAge > 0 then table.insert(lostParts, target) end
+			end
+			
+			if #lostParts > 0 then
+				local char = player.Character; local root = char and char:FindFirstChild("HumanoidRootPart")
+				if root then
+					local oldCF = root.CFrame
+					for _, p in ipairs(lostParts) do
+						root.CFrame = p.CFrame
+						-- Variable wait based on strength: 1 = fast/minimal, 5 = more reliable
+						for i = 1, autoReclaimStrength do RunService.Heartbeat:Wait() end
+					end
+					root.CFrame = oldCF
+				end
+			end
+		end
+		-- Faster checks for higher strength
+		task.wait(math.max(0.05, 0.3 / autoReclaimStrength))
+	end
+end)
+
 local playerFlingEnabled, lockOnEnabled = false, false
 local lockedTargetRoot = nil
+local lastLockedVelocity = Vector3.new(0, 0, 0)
+local lockedHighlight = nil
+local flingPower = 16000
 local followHotkey, followKeepPosition, isFollowing = Enum.KeyCode.LeftControl, false, false
+
+-- Lock Highlight Helper
+local function applyLockHighlight(target, enable)
+	if enable then
+		if not target:FindFirstChild("LockHighlight") then
+			local h = Instance.new("Highlight", target)
+			h.Name = "LockHighlight"; h.FillColor = Color3.fromRGB(255, 50, 50); h.OutlineColor = Color3.fromRGB(255, 255, 255)
+			lockedHighlight = h
+		end
+	else
+		if lockedHighlight then lockedHighlight:Destroy(); lockedHighlight = nil end
+		local h = target and target:FindFirstChild("LockHighlight"); if h then h:Destroy() end
+	end
+end
+
+local function getClosestPlayerToMouse()
+	local closest, dist = nil, 100 
+	for _, p in ipairs(game:GetService("Players"):GetPlayers()) do
+		if p ~= player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+			local root = p.Character.HumanoidRootPart
+			local screenPos, onScreen = workspace.CurrentCamera:WorldToViewportPoint(root.Position)
+			if onScreen then
+				local mPos = UserInputService:GetMouseLocation()
+				local d = (Vector2.new(screenPos.X, screenPos.Y) - mPos).Magnitude
+				if d < dist then dist = d; closest = root end
+			end
+		end
+	end
+	return closest
+end
 local highlightEnabled = false
 local selectedPartIndex, currentIncrement = 1, 0.2 
 local unanchoredCount, anchoredCache, unanchoredParts, statsLabel = 0, {}, {}, nil
@@ -118,9 +190,17 @@ end
 local function disablePhysics(targetPart)
 	local originals, partsToModify = {}, getAssemblyUnanchored(targetPart)
 	for _, part in ipairs(partsToModify) do
-		originals[part] = { Group = part.CollisionGroup, Collide = part.CanCollide, Touch = part.CanTouch, Query = part.CanQuery }
+		originals[part] = { 
+			Group = part.CollisionGroup, 
+			Collide = part.CanCollide, 
+			Touch = part.CanTouch, 
+			Query = part.CanQuery,
+			CustomPhysics = part.CustomPhysicalProperties 
+		}
 		part.CanCollide = false; part.CanTouch = false; part.CanQuery = false
 		pcall(function() part.CollisionGroup = HELD_GROUP end)
+		-- Improved Ownership Properties: Near-zero density to help maintain client control
+		part.CustomPhysicalProperties = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
 	end
 	return originals, partsToModify
 end
@@ -130,6 +210,7 @@ local function restorePhysics(originals)
 		if part and part.Parent then
 			pcall(function() part.CollisionGroup = data.Group end)
 			part.CanCollide = data.Collide; part.CanTouch = data.Touch; part.CanQuery = data.Query
+			part.CustomPhysicalProperties = data.CustomPhysics
 		end
 	end
 end
@@ -225,6 +306,11 @@ local function createEditGui()
 	flingBtn.MouseButton1Click:Connect(function() flingMode = not flingMode; updateToggles() end)
 	claimBtn.MouseButton1Click:Connect(function() autoReclaim = not autoReclaim; updateToggles() end)
 	
+	local reclaimFrame = Instance.new("Frame", mainFrame); reclaimFrame.Size = UDim2.new(0.85, 0, 0, 30); reclaimFrame.Position = UDim2.new(0.075, 0, 0, 420); reclaimFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30); Instance.new("UICorner", reclaimFrame)
+	Instance.new("TextLabel", reclaimFrame).Size = UDim2.new(0.6, 0, 1, 0); reclaimFrame.TextLabel.Text = "RECLAIM STR:"; reclaimFrame.TextLabel.TextColor3 = Color3.fromRGB(200, 200, 200); reclaimFrame.TextLabel.BackgroundTransparency = 1; reclaimFrame.TextLabel.Font = Enum.Font.GothamBold; reclaimFrame.TextLabel.TextSize = 9
+	local rsInput = Instance.new("TextBox", reclaimFrame); rsInput.Size = UDim2.new(0.35, 0, 0.8, 0); rsInput.Position = UDim2.new(0.6, 0, 0.1, 0); rsInput.BackgroundColor3 = Color3.fromRGB(50, 50, 50); rsInput.Text = tostring(autoReclaimStrength); rsInput.TextColor3 = Color3.new(1, 1, 1); rsInput.Font = Enum.Font.GothamBold; rsInput.TextSize = 10; Instance.new("UICorner", rsInput)
+	rsInput.FocusLost:Connect(function() local val = tonumber(rsInput.Text); if val then autoReclaimStrength = math.clamp(val, 1, 10) else rsInput.Text = tostring(autoReclaimStrength) end end)
+	
 	updateToggles = function() 
 		rotBtn.BackgroundColor3 = isRotationMode and Color3.fromRGB(90, 90, 50) or Color3.fromRGB(50, 50, 90); 
 		moveAllBtn.Text = moveAllMode and "MOVE ALL: ON" or "MOVE ALL: OFF"; 
@@ -235,6 +321,8 @@ local function createEditGui()
 		flingBtn.BackgroundColor3 = flingMode and Color3.fromRGB(150, 50, 50) or Color3.fromRGB(40, 40, 40);
 		claimBtn.Text = autoReclaim and "AUTORECLAIM: ON" or "AUTORECLAIM: OFF";
 		claimBtn.BackgroundColor3 = autoReclaim and Color3.fromRGB(50, 150, 100) or Color3.fromRGB(40, 40, 40);
+		reclaimFrame.Visible = autoReclaim; local off = autoReclaim and 35 or 0
+		spinToggle.Position = UDim2.new(0.075, 0, 0, 420 + off); updateMainLayout()
 	end
 
 	spinToggle = createBtn("SPIN: OFF", UDim2.new(0.075, 0, 0, 420), UDim2.new(0.85, 0, 0, 30), mainFrame); spinToggle.TextSize = 10; spinToggle.MouseButton1Click:Connect(function()
@@ -276,7 +364,12 @@ local function createEditGui()
 	local kb = createBtn("KEEP POSITION: OFF", UDim2.new(0.05, 0, 0, 90), UDim2.new(0.9, 0, 0, 35), followFrame); local function updateK() kb.Text = "KEEP POSITION: "..(followKeepPosition and "ON" or "OFF"); kb.BackgroundColor3 = followKeepPosition and Color3.fromRGB(40,100,40) or Color3.fromRGB(50,50,50) end; kb.MouseButton1Click:Connect(function() followKeepPosition = not followKeepPosition updateK() end); updateK()
 	
 	local pfBtn = createBtn("PLAYER FLING: OFF", UDim2.new(0.05, 0, 0, 135), UDim2.new(0.9, 0, 0, 35), followFrame); pfBtn.TextSize = 10; pfBtn.MouseButton1Click:Connect(function() playerFlingEnabled = not playerFlingEnabled; pfBtn.Text = "PLAYER FLING: " .. (playerFlingEnabled and "ON" or "OFF"); pfBtn.BackgroundColor3 = playerFlingEnabled and Color3.fromRGB(150, 50, 50) or Color3.fromRGB(50, 50, 50) end); pfBtn.Text = "PLAYER FLING: " .. (playerFlingEnabled and "ON" or "OFF"); pfBtn.BackgroundColor3 = playerFlingEnabled and Color3.fromRGB(150, 50, 50) or Color3.fromRGB(50, 50, 50)
-	local loBtn = createBtn("LOCK ON: OFF", UDim2.new(0.05, 0, 0, 180), UDim2.new(0.9, 0, 0, 35), followFrame); loBtn.TextSize = 10; loBtn.MouseButton1Click:Connect(function() lockOnEnabled = not lockOnEnabled; loBtn.Text = "LOCK ON: " .. (lockOnEnabled and "ON" or "OFF"); loBtn.BackgroundColor3 = lockOnEnabled and Color3.fromRGB(50, 100, 150) or Color3.fromRGB(50, 50, 50); if not lockOnEnabled then lockedTargetRoot = nil end end); loBtn.Text = "LOCK ON: " .. (lockOnEnabled and "ON" or "OFF"); loBtn.BackgroundColor3 = lockOnEnabled and Color3.fromRGB(50, 100, 150) or Color3.fromRGB(50, 50, 50)
+	local loBtn = createBtn("LOCK ON: OFF", UDim2.new(0.05, 0, 0, 180), UDim2.new(0.9, 0, 0, 35), followFrame); loBtn.TextSize = 10; loBtn.MouseButton1Click:Connect(function() lockOnEnabled = not lockOnEnabled; loBtn.Text = "LOCK ON: " .. (lockOnEnabled and "ON" or "OFF"); loBtn.BackgroundColor3 = lockOnEnabled and Color3.fromRGB(50, 100, 150) or Color3.fromRGB(50, 50, 50); if not lockOnEnabled then if lockedTargetRoot then applyLockHighlight(lockedTargetRoot, false) end lockedTargetRoot = nil end end); loBtn.Text = "LOCK ON: " .. (lockOnEnabled and "ON" or "OFF"); loBtn.BackgroundColor3 = lockOnEnabled and Color3.fromRGB(50, 100, 150) or Color3.fromRGB(50, 50, 50)
+	
+	local fpFrame = Instance.new("Frame", followFrame); fpFrame.Size = UDim2.new(0.9, 0, 0, 30); fpFrame.Position = UDim2.new(0.05, 0, 0, 220); fpFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30); Instance.new("UICorner", fpFrame)
+	Instance.new("TextLabel", fpFrame).Size = UDim2.new(0.6, 0, 1, 0); fpFrame.TextLabel.Text = "FLING POWER:"; fpFrame.TextLabel.TextColor3 = Color3.fromRGB(200, 200, 200); fpFrame.TextLabel.BackgroundTransparency = 1; fpFrame.TextLabel.Font = Enum.Font.GothamBold; fpFrame.TextLabel.TextSize = 9
+	local fpInput = Instance.new("TextBox", fpFrame); fpInput.Size = UDim2.new(0.35, 0, 0.8, 0); fpInput.Position = UDim2.new(0.6, 0, 0.1, 0); fpInput.BackgroundColor3 = Color3.fromRGB(50, 50, 50); fpInput.Text = tostring(flingPower); fpInput.TextColor3 = Color3.new(1, 1, 1); fpInput.Font = Enum.Font.GothamBold; fpInput.TextSize = 10; Instance.new("UICorner", fpInput)
+	fpInput.FocusLost:Connect(function() local val = tonumber(fpInput.Text); if val then flingPower = val else fpInput.Text = tostring(flingPower) end end)
 	
 	local pi = Instance.new("TextBox", presetFrame); pi.Size = UDim2.new(0.9,0,0,30); pi.Position = UDim2.new(0.05,0,0,40); pi.BackgroundColor3 = Color3.fromRGB(40,40,40); pi.TextColor3 = Color3.new(1,1,1); pi.PlaceholderText = "Preset Name..."; pi.Font = Enum.Font.GothamBold; Instance.new("UICorner", pi)
 	local rb = createBtn("REPEAT: OFF", UDim2.new(0.05, 0, 0, 80), UDim2.new(0.9, 0, 0, 30), presetFrame); local function updateRB() rb.Text = "REPEAT: "..(presetRepeat and "ON" or "OFF"); rb.BackgroundColor3 = presetRepeat and Color3.fromRGB(100,100,40) or Color3.fromRGB(50,50,50) end; rb.MouseButton1Click:Connect(function() presetRepeat = not presetRepeat updateRB() end); updateRB()
@@ -295,7 +388,12 @@ local function onActivated()
 		applyHighlight(target, false); restorePhysics(heldParts[target].OriginalGroups); clearConstraints(target); if heldParts[target].TargetAtt then heldParts[target].TargetAtt:Destroy() end; heldParts[target] = nil; if activeGui then updateSelectionDisplay() end
 	else
 		local originals, affectedParts = disablePhysics(target); local partHandleAtt = Instance.new("Attachment", handle); partHandleAtt.Name = "GrabAtt_" .. tostring(tick()); heldParts[target] = { OriginalGroups = originals, AffectedParts = affectedParts, TargetAtt = partHandleAtt, Spin = { Enabled = false, Speed = 1, Direction = "Up" }, Orbit = { Enabled = false, Speed = 1, Distance = 5, Type = "Prograde" } }; if not partMemory[target] then partMemory[target] = CFrame.new(0, 0, 0) end
-		applyHighlight(target, highlightEnabled); local partAtt = Instance.new("Attachment", target); partAtt.Name = "PartGrabAtt"; local ap = Instance.new("AlignPosition", target); ap.Attachment0 = partAtt; ap.Attachment1 = partHandleAtt; ap.RigidityEnabled = true; local ao = Instance.new("AlignOrientation", target); ao.Attachment0 = partAtt; ao.Attachment1 = partHandleAtt; ao.RigidityEnabled = true; createEditGui(); if activeGui then updateSelectionDisplay() end end
+		applyHighlight(target, highlightEnabled); 
+		local partAtt = Instance.new("Attachment", target); partAtt.Name = "PartGrabAtt"
+		local ap = Instance.new("AlignPosition", target); ap.Name = "GrabPosition"; ap.Attachment0 = partAtt; ap.Attachment1 = partHandleAtt; ap.RigidityEnabled = true
+		local ao = Instance.new("AlignOrientation", target); ao.Name = "GrabOrientation"; ao.Attachment0 = partAtt; ao.Attachment1 = partHandleAtt; ao.RigidityEnabled = true
+		createEditGui(); if activeGui then updateSelectionDisplay() end 
+	end
 end
 
 RunService.Heartbeat:Connect(function(dt)
@@ -305,100 +403,98 @@ RunService.Heartbeat:Connect(function(dt)
 	local char = player.Character; if not char then return end
 	local root = char:FindFirstChild("HumanoidRootPart"); rightHand = char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm"); isFollowing = UserInputService:IsKeyDown(followHotkey); local list = getHeldList()
 	
-	if not isFollowing then lockedTargetRoot = nil end
-
-	-- Check for player target under mouse
-	local playerTargetRoot = nil
-	if isFollowing and mouse.Target then
-		local isP, pModel = isPlayerPart(mouse.Target)
-		if isP then 
-			playerTargetRoot = pModel:FindFirstChild("HumanoidRootPart") 
-			if lockOnEnabled then lockedTargetRoot = playerTargetRoot end
+	-- Improved Lock Selection & Logic
+	if lockOnEnabled then
+		local nearPlayer = getClosestPlayerToMouse()
+		if nearPlayer and nearPlayer ~= lockedTargetRoot then
+			if lockedTargetRoot then applyLockHighlight(lockedTargetRoot, false) end
+			lockedTargetRoot = nearPlayer
+			applyLockHighlight(lockedTargetRoot, true)
 		end
+	else
+		if lockedTargetRoot then applyLockHighlight(lockedTargetRoot, false) end
+		lockedTargetRoot = nil
 	end
 
-	-- Lock On Break Conditions
+	-- Lock On Break/Validity Conditions
 	if lockedTargetRoot then
 		local breakLock = false
+		local currentVel = lockedTargetRoot.AssemblyLinearVelocity
+		local velDelta = (currentVel - lastLockedVelocity).Magnitude
+		lastLockedVelocity = currentVel
 		if not lockedTargetRoot.Parent or not lockedTargetRoot.Parent:FindFirstChildOfClass("Humanoid") then breakLock = true end
-		if lockedTargetRoot.AssemblyLinearVelocity.Magnitude > 200 then breakLock = true end
-		for target, _ in pairs(heldParts) do if target.ReceiveAge ~= 0 then breakLock = true; break end end
-		if breakLock then lockedTargetRoot = nil end
+		if lockedTargetRoot.Parent:FindFirstChildOfClass("Humanoid").Health <= 0 then breakLock = true end
+		if velDelta > 25000 then breakLock = true end
+		if currentVel.Magnitude > 40000 then breakLock = true end
+		if breakLock then applyLockHighlight(lockedTargetRoot, false); lockedTargetRoot = nil; lastLockedVelocity = Vector3.new(0,0,0) end
 	end
 
+	local playerTargetRoot = nil
+	if isFollowing and not lockedTargetRoot and mouse.Target then
+		local isP, pModel = isPlayerPart(mouse.Target)
+		if isP then playerTargetRoot = pModel:FindFirstChild("HumanoidRootPart") end
+	end
 	local finalTargetRoot = lockedTargetRoot or playerTargetRoot
 
 	for target, data in pairs(heldParts) do
 		if target and target.Parent and rightHand then
-			-- Auto Reclaim Check
-			if autoReclaim and target.ReceiveAge > 0 and tick() - lastReclaim > 0.5 and root then
-				lastReclaim = tick()
-				local oldPos = root.CFrame
-				root.CFrame = target.CFrame
-				task.wait()
-				root.CFrame = oldPos
+			local isFocused = false; if moveAllMode then isFocused = true else local cur = list[selectedPartIndex]; if target == cur then isFocused = true end end
+			if data.Spin.Enabled then 
+				local curCF = partMemory[target] or CFrame.new(0, 0, 0); local angle = math.rad(data.Spin.Speed * 100 * dt); local rot = CFrame.new()
+				if data.Spin.Direction == "Up" then rot = CFrame.fromEulerAnglesXYZ(0, angle, 0) elseif data.Spin.Direction == "Sideways" then rot = CFrame.fromEulerAnglesXYZ(angle, 0, 0) else rot = CFrame.fromEulerAnglesXYZ(angle, angle, angle) end
+				partMemory[target] = curCF * rot 
 			end
 
-			local isFocused = false; if moveAllMode then isFocused = true else local cur = list[selectedPartIndex]; if target == cur then isFocused = true end end
-			if data.Spin.Enabled then local curCF = partMemory[target] or CFrame.new(0, 0, 0); local angle = math.rad(data.Spin.Speed * 100 * dt); local rot = CFrame.new()
-				if data.Spin.Direction == "Up" then rot = CFrame.fromEulerAnglesXYZ(0, angle, 0) elseif data.Spin.Direction == "Sideways" then rot = CFrame.fromEulerAnglesXYZ(angle, 0, 0) else rot = CFrame.fromEulerAnglesXYZ(angle, angle, angle) end
-				partMemory[target] = curCF * rot end
 			local baseCFrame, isOrbiting = rightHand.CFrame, false
-			if data.Orbit.Enabled and root then isOrbiting = true; local t = tick() * data.Orbit.Speed; local d = data.Orbit.Distance; local off = Vector3.new(0,0,0)
+			if data.Orbit.Enabled and root then 
+				isOrbiting = true; local t = tick() * data.Orbit.Speed; local d = data.Orbit.Distance; local off = Vector3.new(0,0,0)
 				if data.Orbit.Type == "Prograde" then off = Vector3.new(math.cos(t)*d, 0, math.sin(t)*d) elseif data.Orbit.Type == "Retrograde" then off = Vector3.new(math.cos(-t)*d, 0, math.sin(-t)*d) elseif data.Orbit.Type == "Polar" then off = Vector3.new(0, math.cos(t)*d, math.sin(t)*d) end
-				baseCFrame = root.CFrame * CFrame.new(off) end
+				baseCFrame = root.CFrame * CFrame.new(off) 
+			end
+
 			local offset = partMemory[target] or CFrame.new(0, 0, 0)
-			
+			local isActuallyFlinging = false
+
 			if data.TargetAtt then 
 				if isFocused and isFollowing then 
-					if playerFlingEnabled then
-						if finalTargetRoot then
-							local swing = math.sin(tick() * 60) * 6
-							local targetPos = finalTargetRoot.Position + (finalTargetRoot.CFrame.LookVector * swing)
-							data.TargetAtt.WorldCFrame = CFrame.new(targetPos) * offset.Rotation
-							local direction = (targetPos - target.Position).Unit
-							local speed = 16000
-							for _, p in ipairs(data.AffectedParts) do
-								p.AssemblyLinearVelocity = direction * speed
-								p.AssemblyAngularVelocity = Vector3.new(math.random(-800,800), math.random(-800,800), math.random(-800,800))
-							end
-						end
-					else
-						local targetPos = mouse.Hit.Position
-						if playerTargetRoot and flingMode then
-							local swing = math.sin(tick() * 60) * 6
-							targetPos = playerTargetRoot.Position + (playerTargetRoot.CFrame.LookVector * swing)
-						end
-						data.TargetAtt.WorldCFrame = CFrame.new(targetPos) * offset.Rotation; 
-						if followKeepPosition and not playerTargetRoot then partMemory[target] = baseCFrame:Inverse() * data.TargetAtt.WorldCFrame end
-						if flingMode then
-							local direction = (targetPos - target.Position).Unit
-							local speed = playerTargetRoot and 16000 or 10000
-							for _, p in ipairs(data.AffectedParts) do
-								p.AssemblyLinearVelocity = direction * speed
-								p.AssemblyAngularVelocity = Vector3.new(math.random(-800,800), math.random(-800,800), math.random(-800,800))
-							end
-						end
+					local targetPos = mouse.Hit.Position
+					if playerFlingEnabled and finalTargetRoot then
+						isActuallyFlinging = true
+						local swing = math.sin(tick() * 60) * 6
+						targetPos = finalTargetRoot.Position + (finalTargetRoot.CFrame.LookVector * swing)
+					elseif flingMode and playerTargetRoot then
+						isActuallyFlinging = true
+						local swing = math.sin(tick() * 60) * 6
+						targetPos = playerTargetRoot.Position + (playerTargetRoot.CFrame.LookVector * swing)
 					end
-				elseif isOrbiting then 
-					data.TargetAtt.WorldCFrame = CFrame.new((baseCFrame * CFrame.new(offset.Position)).Position) * offset.Rotation 
-				else 
-					data.TargetAtt.WorldCFrame = baseCFrame * offset 
+					
+					data.TargetAtt.WorldCFrame = CFrame.new(targetPos) * offset.Rotation
+					if isActuallyFlinging then
+						local direction = (targetPos - target.Position).Unit
+						local speed = flingPower
+						for _, p in ipairs(data.AffectedParts) do
+							p.AssemblyLinearVelocity = direction * speed
+							p.AssemblyAngularVelocity = Vector3.new(math.random(-800,800), math.random(-800,800), math.random(-800,800))
+						end
+					elseif followKeepPosition and not (playerFlingEnabled or flingMode) then
+						partMemory[target] = baseCFrame:Inverse() * data.TargetAtt.WorldCFrame
+					end
+				else
+					-- Return to Hand/Orbit
+					data.TargetAtt.WorldCFrame = isOrbiting and (CFrame.new((baseCFrame * CFrame.new(offset.Position)).Position) * offset.Rotation) or (baseCFrame * offset)
 				end 
 			end
 			
-			-- Ownership and Fling Cleanup
-			if keepOwnership or (flingMode and isFollowing) or (playerFlingEnabled and isFollowing and finalTargetRoot) then 
-				for _, p in ipairs(data.AffectedParts) do 
-					if keepOwnership and not ((flingMode or playerFlingEnabled) and isFollowing) then
-						local rv = 14.4 + (math.random() * 2.1)
-						p.Velocity = Vector3.new(rv, rv, rv) 
-					end
-				end 
-			elseif (flingMode or playerFlingEnabled) and not isFollowing then
+			-- Velocity Cleanup (Reset when not flinging)
+			if not isActuallyFlinging then
 				for _, p in ipairs(data.AffectedParts) do
-					p.AssemblyLinearVelocity = Vector3.new(0,0,0)
-					p.AssemblyAngularVelocity = Vector3.new(0,0,0)
+					if keepOwnership then
+						local rv = 14.4 + (math.random() * 2.1)
+						p.Velocity = Vector3.new(rv, rv, rv)
+					else
+						p.AssemblyLinearVelocity = Vector3.new(0,0,0)
+						p.AssemblyAngularVelocity = Vector3.new(0,0,0)
+					end
 				end
 			end
 		else heldParts[target] = nil end
@@ -406,5 +502,5 @@ RunService.Heartbeat:Connect(function(dt)
 end)
 
 UserInputService.InputBegan:Connect(function(input, processed) if not processed and input.KeyCode == Enum.KeyCode.G then if activeGui then activeGui.Enabled = not activeGui.Enabled end end end)
-Tool.Activated:Connect(onActivated); Tool.Unequipped:Connect(function() for target, data in pairs(heldParts) do restorePhysics(data.OriginalGroups); clearConstraints(target) end heldParts = {}; handle:ClearAllChildren(); if activeGui then activeGui:Destroy(); activeGui = nil end end)
+Tool.Activated:Connect(onActivated); Tool.Unequipped:Connect(function() for target, data in pairs(heldParts) do restorePhysics(data.OriginalGroups); clearConstraints(target) end heldParts = {}; handle:ClearAllChildren(); if lockedTargetRoot then applyLockHighlight(lockedTargetRoot, false) end if activeGui then activeGui:Destroy(); activeGui = nil end end)
 Tool.Parent = player.Backpack

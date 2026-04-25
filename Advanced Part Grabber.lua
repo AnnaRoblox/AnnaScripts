@@ -40,8 +40,76 @@ local heldParts, partMemory, rotationMemory = {}, {}, {}
 local activeGui, rightHand = nil, nil
 local extrasFrame, orbitFrame, followFrame, presetFrame
 local extrasBtn, presetOpenBtn, resetBtn
-local isRotationMode, keepOwnership, moveAllMode, presetRepeat, flingMode, autoReclaim = false, false, false, false, false, false
-local autoReclaimStrength = 1
+local isRotationMode, keepOwnership, moveAllMode, presetRepeat, flingMode, autoReclaim, predictionEnabled = false, false, false, false, false, false, false
+local autoReclaimStrength, predictionStrength = 1, 1
+local flingDirection = "Look"
+local playerFlingEnabled, lockOnEnabled = false, false
+local lockedTargetRoot = nil
+local lastLockedVelocity = Vector3.new(0, 0, 0)
+local lockedHighlight = nil
+local flingPower = 16000
+local followHotkey, followKeepPosition, isFollowing = Enum.KeyCode.LeftControl, false, false
+local highlightEnabled = false
+local selectedPartIndex, currentIncrement = 1, 0.2 
+local unanchoredCount, anchoredCache, unanchoredParts, statsLabel = 0, {}, {}, nil
+
+-- Settings System
+local SETTINGS_FILE = "grabber_settings.json"
+
+local function saveSettings()
+	local settings = {
+		isRotationMode = isRotationMode,
+		keepOwnership = keepOwnership,
+		moveAllMode = moveAllMode,
+		presetRepeat = presetRepeat,
+		flingMode = flingMode,
+		autoReclaim = autoReclaim,
+		predictionEnabled = predictionEnabled,
+		autoReclaimStrength = autoReclaimStrength,
+		predictionStrength = predictionStrength,
+		flingPower = flingPower,
+		flingDirection = flingDirection,
+		playerFlingEnabled = playerFlingEnabled,
+		lockOnEnabled = lockOnEnabled,
+		followHotkey = followHotkey.Name,
+		followKeepPosition = followKeepPosition,
+		highlightEnabled = highlightEnabled,
+		currentIncrement = currentIncrement
+	}
+	pcall(function()
+		if writefile then
+			writefile(SETTINGS_FILE, HttpService:JSONEncode(settings))
+		end
+	end)
+end
+
+local function loadSettings()
+	pcall(function()
+		if isfile and isfile(SETTINGS_FILE) then
+			local data = HttpService:JSONDecode(readfile(SETTINGS_FILE))
+			if data then
+				if data.isRotationMode ~= nil then isRotationMode = data.isRotationMode end
+				if data.keepOwnership ~= nil then keepOwnership = data.keepOwnership end
+				if data.moveAllMode ~= nil then moveAllMode = data.moveAllMode end
+				if data.presetRepeat ~= nil then presetRepeat = data.presetRepeat end
+				if data.flingMode ~= nil then flingMode = data.flingMode end
+				if data.autoReclaim ~= nil then autoReclaim = data.autoReclaim end
+				if data.predictionEnabled ~= nil then predictionEnabled = data.predictionEnabled end
+				if data.autoReclaimStrength ~= nil then autoReclaimStrength = data.autoReclaimStrength end
+				if data.predictionStrength ~= nil then predictionStrength = data.predictionStrength end
+				if data.flingPower ~= nil then flingPower = data.flingPower end
+				if data.flingDirection ~= nil then flingDirection = data.flingDirection end
+				if data.playerFlingEnabled ~= nil then playerFlingEnabled = data.playerFlingEnabled end
+				if data.lockOnEnabled ~= nil then lockOnEnabled = data.lockOnEnabled end
+				if data.followHotkey ~= nil then followHotkey = Enum.KeyCode[data.followHotkey] or followHotkey end
+				if data.followKeepPosition ~= nil then followKeepPosition = data.followKeepPosition end
+				if data.highlightEnabled ~= nil then highlightEnabled = data.highlightEnabled end
+				if data.currentIncrement ~= nil then currentIncrement = data.currentIncrement end
+			end
+		end
+	end)
+end
+loadSettings()
 
 -- Optimized Auto Reclaim Loop
 task.spawn(function()
@@ -58,24 +126,15 @@ task.spawn(function()
 					local oldCF = root.CFrame
 					for _, p in ipairs(lostParts) do
 						root.CFrame = p.CFrame
-						-- Variable wait based on strength: 1 = fast/minimal, 5 = more reliable
 						for i = 1, autoReclaimStrength do RunService.Heartbeat:Wait() end
 					end
 					root.CFrame = oldCF
 				end
 			end
 		end
-		-- Faster checks for higher strength
 		task.wait(math.max(0.05, 0.3 / autoReclaimStrength))
 	end
 end)
-
-local playerFlingEnabled, lockOnEnabled = false, false
-local lockedTargetRoot = nil
-local lastLockedVelocity = Vector3.new(0, 0, 0)
-local lockedHighlight = nil
-local flingPower = 16000
-local followHotkey, followKeepPosition, isFollowing = Enum.KeyCode.LeftControl, false, false
 
 -- Lock Highlight Helper
 local function applyLockHighlight(target, enable)
@@ -106,10 +165,10 @@ local function getClosestPlayerToMouse()
 	end
 	return closest
 end
+
 local highlightEnabled = false
 local selectedPartIndex, currentIncrement = 1, 0.2 
 local unanchoredCount, anchoredCache, unanchoredParts, statsLabel = 0, {}, {}, nil
-local lastReclaim = 0
 
 -- Forward Declarations
 local updateSelectionDisplay, updateSpinDisplay, updateDirDisplay, updateOrbitDisplay, updateTypeDisplay, updateMainLayout, updateToggles
@@ -199,7 +258,6 @@ local function disablePhysics(targetPart)
 		}
 		part.CanCollide = false; part.CanTouch = false; part.CanQuery = false
 		pcall(function() part.CollisionGroup = HELD_GROUP end)
-		-- Improved Ownership Properties: Near-zero density to help maintain client control
 		part.CustomPhysicalProperties = PhysicalProperties.new(0.0001, 0, 0, 0, 0)
 	end
 	return originals, partsToModify
@@ -242,13 +300,17 @@ local function createEditGui()
 
 	extrasFrame = createSubFrame("Extras", UDim2.new(0, 200, 0, 210))
 	orbitFrame = createSubFrame("Orbit Settings", UDim2.new(0, 200, 0, 220))
-	followFrame = createSubFrame("Follow Mode", UDim2.new(0, 220, 0, 240))
+	followFrame = createSubFrame("Follow Mode", UDim2.new(0, 220, 0, 420))
 	presetFrame = createSubFrame("Preset Menu", UDim2.new(0, 220, 0, 230))
 	local statsFrame = createSubFrame("Statistics", UDim2.new(0, 200, 0, 60)); statsFrame.Visible = true; statsFrame.Position = UDim2.new(0, 20, 0, 20)
 	statsLabel = Instance.new("TextLabel", statsFrame); statsLabel.Size = UDim2.new(1, 0, 1, -30); statsLabel.Position = UDim2.new(0, 0, 0, 30); statsLabel.BackgroundTransparency = 1; statsLabel.TextColor3 = Color3.new(1, 1, 1); statsLabel.Font = Enum.Font.GothamBold; statsLabel.TextSize = 12; updateStatsUI()
 
 	local partLabel = Instance.new("TextLabel")
-	local spinToggle, speedFrame, dirFrame, orbitToggle, orbitSpeedInput, orbitDistInput
+	local spinToggle, speedFrame, dirFrame, updateOrbitDisplay, updateTypeDisplay
+
+	local function createBtn(text, pos, size, parent)
+		local b = Instance.new("TextButton", parent); b.Size = size; b.Position = pos; b.Text = text; b.BackgroundColor3 = Color3.fromRGB(45, 45, 45); b.TextColor3 = Color3.new(1, 1, 1); b.Font = Enum.Font.GothamBold; Instance.new("UICorner", b); return b
+	end
 
 	updateMainLayout = function()
 		local cur = getSelectedPart(); local spinOn = (cur and heldParts[cur]) and heldParts[cur].Spin.Enabled or false
@@ -259,13 +321,9 @@ local function createEditGui()
 	updateSelectionDisplay = function()
 		local list = getHeldList(); if #list == 0 then partLabel.Text = "No Parts Held"; selectedPartIndex = 1
 		elseif selectedPartIndex > #list then selectedPartIndex = #list end
-			local cur = list[selectedPartIndex]; partLabel.Text = "["..selectedPartIndex.."/"..#list.."] " .. (cur and cur.Name or "Unknown")
-			if cur and heldParts[cur] then updateSpinDisplay(); updateDirDisplay(); updateOrbitDisplay(); updateTypeDisplay() end
+		local cur = list[selectedPartIndex]; partLabel.Text = "["..selectedPartIndex.."/"..#list.."] " .. (cur and cur.Name or "Unknown")
+		if cur and heldParts[cur] then updateSpinDisplay(); updateDirDisplay(); updateOrbitDisplay(); updateTypeDisplay() end
 		updateToggles(); updateMainLayout()
-	end
-
-	local function createBtn(text, pos, size, parent)
-		local b = Instance.new("TextButton", parent); b.Size = size; b.Position = pos; b.Text = text; b.BackgroundColor3 = Color3.fromRGB(45, 45, 45); b.TextColor3 = Color3.new(1, 1, 1); b.Font = Enum.Font.GothamBold; Instance.new("UICorner", b); return b
 	end
 
 	local selFrame = Instance.new("Frame", mainFrame); selFrame.Size = UDim2.new(0.9, 0, 0, 40); selFrame.Position = UDim2.new(0.05, 0, 0, 20); selFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 35); Instance.new("UICorner", selFrame)
@@ -276,7 +334,7 @@ local function createEditGui()
 	local incFrame = Instance.new("Frame", mainFrame); incFrame.Size = UDim2.new(0.9, 0, 0, 30); incFrame.Position = UDim2.new(0.05, 0, 0, 65); incFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30); Instance.new("UICorner", incFrame)
 	Instance.new("TextLabel", incFrame).Size = UDim2.new(0.6, 0, 1, 0); incFrame.TextLabel.Text = "INCREMENT:"; incFrame.TextLabel.TextColor3 = Color3.fromRGB(200, 200, 200); incFrame.TextLabel.BackgroundTransparency = 1; incFrame.TextLabel.Font = Enum.Font.GothamBold; incFrame.TextLabel.TextSize = 10
 	local incInput = Instance.new("TextBox", incFrame); incInput.Size = UDim2.new(0.35, 0, 0.8, 0); incInput.Position = UDim2.new(0.6, 0, 0.1, 0); incInput.BackgroundColor3 = Color3.fromRGB(50, 50, 50); incInput.Text = tostring(currentIncrement); incInput.TextColor3 = Color3.new(1, 1, 1); incInput.Font = Enum.Font.GothamBold; incInput.TextSize = 12; Instance.new("UICorner", incInput)
-	incInput.FocusLost:Connect(function() local val = tonumber(incInput.Text); if val then currentIncrement = val else incInput.Text = tostring(currentIncrement) end end)
+	incInput.FocusLost:Connect(function() local val = tonumber(incInput.Text); if val then currentIncrement = val; saveSettings() else incInput.Text = tostring(currentIncrement) end end)
 
 	local function applyToTarget(targetPart, axis, direction)
 		local delta = currentIncrement * direction; local cur = partMemory[targetPart] or CFrame.new(0, 0, 0); local pos, x, y, z = cur.Position, cur:ToOrientation()
@@ -300,16 +358,16 @@ local function createEditGui()
 	local claimBtn = createBtn("AUTORECLAIM: OFF", UDim2.new(0.075, 0, 0, 385), UDim2.new(0.85, 0, 0, 30), mainFrame)
 	
 	rotBtn.TextSize = 10; moveAllBtn.TextSize = 10; ownBtn.TextSize = 10; flingBtn.TextSize = 10; claimBtn.TextSize = 10
-	rotBtn.MouseButton1Click:Connect(function() isRotationMode = not isRotationMode; updateToggles() end)
-	moveAllBtn.MouseButton1Click:Connect(function() moveAllMode = not moveAllMode; updateToggles() end)
-	ownBtn.MouseButton1Click:Connect(function() keepOwnership = not keepOwnership; updateToggles() end)
-	flingBtn.MouseButton1Click:Connect(function() flingMode = not flingMode; updateToggles() end)
-	claimBtn.MouseButton1Click:Connect(function() autoReclaim = not autoReclaim; updateToggles() end)
+	rotBtn.MouseButton1Click:Connect(function() isRotationMode = not isRotationMode; updateToggles(); saveSettings() end)
+	moveAllBtn.MouseButton1Click:Connect(function() moveAllMode = not moveAllMode; updateToggles(); saveSettings() end)
+	ownBtn.MouseButton1Click:Connect(function() keepOwnership = not keepOwnership; updateToggles(); saveSettings() end)
+	flingBtn.MouseButton1Click:Connect(function() flingMode = not flingMode; updateToggles(); saveSettings() end)
+	claimBtn.MouseButton1Click:Connect(function() autoReclaim = not autoReclaim; updateToggles(); saveSettings() end)
 	
 	local reclaimFrame = Instance.new("Frame", mainFrame); reclaimFrame.Size = UDim2.new(0.85, 0, 0, 30); reclaimFrame.Position = UDim2.new(0.075, 0, 0, 420); reclaimFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30); Instance.new("UICorner", reclaimFrame)
 	Instance.new("TextLabel", reclaimFrame).Size = UDim2.new(0.6, 0, 1, 0); reclaimFrame.TextLabel.Text = "RECLAIM STR:"; reclaimFrame.TextLabel.TextColor3 = Color3.fromRGB(200, 200, 200); reclaimFrame.TextLabel.BackgroundTransparency = 1; reclaimFrame.TextLabel.Font = Enum.Font.GothamBold; reclaimFrame.TextLabel.TextSize = 9
 	local rsInput = Instance.new("TextBox", reclaimFrame); rsInput.Size = UDim2.new(0.35, 0, 0.8, 0); rsInput.Position = UDim2.new(0.6, 0, 0.1, 0); rsInput.BackgroundColor3 = Color3.fromRGB(50, 50, 50); rsInput.Text = tostring(autoReclaimStrength); rsInput.TextColor3 = Color3.new(1, 1, 1); rsInput.Font = Enum.Font.GothamBold; rsInput.TextSize = 10; Instance.new("UICorner", rsInput)
-	rsInput.FocusLost:Connect(function() local val = tonumber(rsInput.Text); if val then autoReclaimStrength = math.clamp(val, 1, 10) else rsInput.Text = tostring(autoReclaimStrength) end end)
+	rsInput.FocusLost:Connect(function() local val = tonumber(rsInput.Text); if val then autoReclaimStrength = math.clamp(val, 1, 10); saveSettings() else rsInput.Text = tostring(autoReclaimStrength) end end)
 	
 	updateToggles = function() 
 		rotBtn.BackgroundColor3 = isRotationMode and Color3.fromRGB(90, 90, 50) or Color3.fromRGB(50, 50, 90); 
@@ -346,9 +404,9 @@ local function createEditGui()
 	createBtn("ORBIT MENU", UDim2.new(0.05, 0, 0, 40), UDim2.new(0.9, 0, 0, 35), extrasFrame).MouseButton1Click:Connect(function() orbitFrame.Visible = not orbitFrame.Visible end)
 	createBtn("FOLLOW MODE", UDim2.new(0.05, 0, 0, 80), UDim2.new(0.9, 0, 0, 35), extrasFrame).MouseButton1Click:Connect(function() followFrame.Visible = not followFrame.Visible end)
 	createBtn("TOGGLE STATS", UDim2.new(0.05, 0, 0, 120), UDim2.new(0.9, 0, 0, 35), extrasFrame).MouseButton1Click:Connect(function() statsFrame.Visible = not statsFrame.Visible end)
-	local highBtn = createBtn("HIGHLIGHT: OFF", UDim2.new(0.05, 0, 0, 160), UDim2.new(0.9, 0, 0, 35), extrasFrame); highBtn.MouseButton1Click:Connect(function()
+	local highBtn = createBtn("HIGHLIGHT: "..(highlightEnabled and "ON" or "OFF"), UDim2.new(0.05, 0, 0, 160), UDim2.new(0.9, 0, 0, 35), extrasFrame); highBtn.BackgroundColor3 = highlightEnabled and Color3.fromRGB(40, 100, 100) or Color3.fromRGB(45, 45, 45); highBtn.MouseButton1Click:Connect(function()
 		highlightEnabled = not highlightEnabled; highBtn.Text = "HIGHLIGHT: "..(highlightEnabled and "ON" or "OFF"); highBtn.BackgroundColor3 = highlightEnabled and Color3.fromRGB(40, 100, 100) or Color3.fromRGB(45, 45, 45)
-		for t, _ in pairs(unanchoredParts) do applyHighlight(t, highlightEnabled) end end)
+		for t, _ in pairs(unanchoredParts) do applyHighlight(t, highlightEnabled) end; saveSettings() end)
 	
 	local otBtn = createBtn("ORBIT: OFF", UDim2.new(0.05, 0, 0, 40), UDim2.new(0.9, 0, 0, 30), orbitFrame); otBtn.MouseButton1Click:Connect(function()
 		local cur = getSelectedPart(); if not cur or not heldParts[cur] then return end
@@ -360,19 +418,33 @@ local function createEditGui()
 	local tyBtn = createBtn("TYPE: PROGRADE", UDim2.new(0.05, 0, 0, 150), UDim2.new(0.9, 0, 0, 30), orbitFrame); tyBtn.MouseButton1Click:Connect(function() local cur = getSelectedPart(); if cur then local nt = heldParts[cur].Orbit.Type == "Prograde" and "Retrograde" or (heldParts[cur].Orbit.Type == "Retrograde" and "Polar" or "Prograde"); for _, p in ipairs(moveAllMode and getHeldList() or {cur}) do if heldParts[p] then heldParts[p].Orbit.Type = nt end end; updateTypeDisplay() end end)
 	updateOrbitDisplay = function() local cur = getSelectedPart(); if cur and heldParts[cur] then local o = heldParts[cur].Orbit; otBtn.Text = o.Enabled and "ORBIT: ON" or "ORBIT: OFF"; otBtn.BackgroundColor3 = o.Enabled and Color3.fromRGB(0, 100, 200) or Color3.fromRGB(45, 45, 45); osi.Text = tostring(o.Speed); odi.Text = tostring(o.Distance) end end
 	updateTypeDisplay = function() local cur = getSelectedPart(); if cur and heldParts[cur] then tyBtn.Text = "TYPE: "..heldParts[cur].Orbit.Type:upper() end end
-	local hb = createBtn("HOTKEY: "..followHotkey.Name, UDim2.new(0.05, 0, 0, 45), UDim2.new(0.9, 0, 0, 35), followFrame); hb.MouseButton1Click:Connect(function() hb.Text = "PRESS KEY..."; local c; c = UserInputService.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Keyboard then followHotkey = i.KeyCode; hb.Text = "HOTKEY: "..followHotkey.Name; c:Disconnect() end end) end)
-	local kb = createBtn("KEEP POSITION: OFF", UDim2.new(0.05, 0, 0, 90), UDim2.new(0.9, 0, 0, 35), followFrame); local function updateK() kb.Text = "KEEP POSITION: "..(followKeepPosition and "ON" or "OFF"); kb.BackgroundColor3 = followKeepPosition and Color3.fromRGB(40,100,40) or Color3.fromRGB(50,50,50) end; kb.MouseButton1Click:Connect(function() followKeepPosition = not followKeepPosition updateK() end); updateK()
+	local hb = createBtn("HOTKEY: "..followHotkey.Name, UDim2.new(0.05, 0, 0, 45), UDim2.new(0.9, 0, 0, 35), followFrame); hb.MouseButton1Click:Connect(function() hb.Text = "PRESS KEY..."; local c; c = UserInputService.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Keyboard then followHotkey = i.KeyCode; hb.Text = "HOTKEY: "..followHotkey.Name; saveSettings(); c:Disconnect() end end) end)
+	local kb = createBtn("KEEP POSITION: OFF", UDim2.new(0.05, 0, 0, 90), UDim2.new(0.9, 0, 0, 35), followFrame); local function updateK() kb.Text = "KEEP POSITION: "..(followKeepPosition and "ON" or "OFF"); kb.BackgroundColor3 = followKeepPosition and Color3.fromRGB(40,100,40) or Color3.fromRGB(50,50,50) end; kb.MouseButton1Click:Connect(function() followKeepPosition = not followKeepPosition; updateK(); saveSettings() end); updateK()
 	
-	local pfBtn = createBtn("PLAYER FLING: OFF", UDim2.new(0.05, 0, 0, 135), UDim2.new(0.9, 0, 0, 35), followFrame); pfBtn.TextSize = 10; pfBtn.MouseButton1Click:Connect(function() playerFlingEnabled = not playerFlingEnabled; pfBtn.Text = "PLAYER FLING: " .. (playerFlingEnabled and "ON" or "OFF"); pfBtn.BackgroundColor3 = playerFlingEnabled and Color3.fromRGB(150, 50, 50) or Color3.fromRGB(50, 50, 50) end); pfBtn.Text = "PLAYER FLING: " .. (playerFlingEnabled and "ON" or "OFF"); pfBtn.BackgroundColor3 = playerFlingEnabled and Color3.fromRGB(150, 50, 50) or Color3.fromRGB(50, 50, 50)
-	local loBtn = createBtn("LOCK ON: OFF", UDim2.new(0.05, 0, 0, 180), UDim2.new(0.9, 0, 0, 35), followFrame); loBtn.TextSize = 10; loBtn.MouseButton1Click:Connect(function() lockOnEnabled = not lockOnEnabled; loBtn.Text = "LOCK ON: " .. (lockOnEnabled and "ON" or "OFF"); loBtn.BackgroundColor3 = lockOnEnabled and Color3.fromRGB(50, 100, 150) or Color3.fromRGB(50, 50, 50); if not lockOnEnabled then if lockedTargetRoot then applyLockHighlight(lockedTargetRoot, false) end lockedTargetRoot = nil end end); loBtn.Text = "LOCK ON: " .. (lockOnEnabled and "ON" or "OFF"); loBtn.BackgroundColor3 = lockOnEnabled and Color3.fromRGB(50, 100, 150) or Color3.fromRGB(50, 50, 50)
+	local pfBtn = createBtn("PLAYER FLING: OFF", UDim2.new(0.05, 0, 0, 135), UDim2.new(0.9, 0, 0, 35), followFrame); pfBtn.TextSize = 10; pfBtn.MouseButton1Click:Connect(function() playerFlingEnabled = not playerFlingEnabled; pfBtn.Text = "PLAYER FLING: " .. (playerFlingEnabled and "ON" or "OFF"); pfBtn.BackgroundColor3 = playerFlingEnabled and Color3.fromRGB(150, 50, 50) or Color3.fromRGB(50, 50, 50); saveSettings() end); pfBtn.Text = "PLAYER FLING: " .. (playerFlingEnabled and "ON" or "OFF"); pfBtn.BackgroundColor3 = playerFlingEnabled and Color3.fromRGB(150, 50, 50) or Color3.fromRGB(50, 50, 50)
+	local loBtn = createBtn("LOCK ON: OFF", UDim2.new(0.05, 0, 0, 180), UDim2.new(0.9, 0, 0, 35), followFrame); loBtn.TextSize = 10; loBtn.MouseButton1Click:Connect(function() lockOnEnabled = not lockOnEnabled; loBtn.Text = "LOCK ON: " .. (lockOnEnabled and "ON" or "OFF"); loBtn.BackgroundColor3 = lockOnEnabled and Color3.fromRGB(50, 100, 150) or Color3.fromRGB(50, 50, 50); if not lockOnEnabled then if lockedTargetRoot then applyLockHighlight(lockedTargetRoot, false) end lockedTargetRoot = nil end; saveSettings() end); loBtn.Text = "LOCK ON: " .. (lockOnEnabled and "ON" or "OFF"); loBtn.BackgroundColor3 = lockOnEnabled and Color3.fromRGB(50, 100, 150) or Color3.fromRGB(50, 50, 50)
 	
-	local fpFrame = Instance.new("Frame", followFrame); fpFrame.Size = UDim2.new(0.9, 0, 0, 30); fpFrame.Position = UDim2.new(0.05, 0, 0, 220); fpFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30); Instance.new("UICorner", fpFrame)
+	local predBtn = createBtn("PREDICTION: OFF", UDim2.new(0.05, 0, 0, 215), UDim2.new(0.9, 0, 0, 35), followFrame); predBtn.TextSize = 10; predBtn.MouseButton1Click:Connect(function() predictionEnabled = not predictionEnabled; predBtn.Text = "PREDICTION: " .. (predictionEnabled and "ON" or "OFF"); predBtn.BackgroundColor3 = predictionEnabled and Color3.fromRGB(100, 50, 150) or Color3.fromRGB(50, 50, 50); saveSettings() end)
+
+	local psFrame = Instance.new("Frame", followFrame); psFrame.Size = UDim2.new(0.9, 0, 0, 30); psFrame.Position = UDim2.new(0.05, 0, 0, 255); psFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30); Instance.new("UICorner", psFrame)
+	Instance.new("TextLabel", psFrame).Size = UDim2.new(0.6, 0, 1, 0); psFrame.TextLabel.Text = "PREDICT STR:"; psFrame.TextLabel.TextColor3 = Color3.fromRGB(200, 200, 200); psFrame.TextLabel.BackgroundTransparency = 1; psFrame.TextLabel.Font = Enum.Font.GothamBold; psFrame.TextLabel.TextSize = 9
+	local psInput = Instance.new("TextBox", psFrame); psInput.Size = UDim2.new(0.35, 0, 0.8, 0); psInput.Position = UDim2.new(0.6, 0, 0.1, 0); psInput.BackgroundColor3 = Color3.fromRGB(50, 50, 50); psInput.Text = tostring(predictionStrength); psInput.TextColor3 = Color3.new(1, 1, 1); psInput.Font = Enum.Font.GothamBold; psInput.TextSize = 10; Instance.new("UICorner", psInput)
+	psInput.FocusLost:Connect(function() local val = tonumber(psInput.Text); if val then predictionStrength = val; saveSettings() else psInput.Text = tostring(predictionStrength) end end)
+
+	local fpFrame = Instance.new("Frame", followFrame); fpFrame.Size = UDim2.new(0.9, 0, 0, 30); fpFrame.Position = UDim2.new(0.05, 0, 0, 295); fpFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30); Instance.new("UICorner", fpFrame)
 	Instance.new("TextLabel", fpFrame).Size = UDim2.new(0.6, 0, 1, 0); fpFrame.TextLabel.Text = "FLING POWER:"; fpFrame.TextLabel.TextColor3 = Color3.fromRGB(200, 200, 200); fpFrame.TextLabel.BackgroundTransparency = 1; fpFrame.TextLabel.Font = Enum.Font.GothamBold; fpFrame.TextLabel.TextSize = 9
 	local fpInput = Instance.new("TextBox", fpFrame); fpInput.Size = UDim2.new(0.35, 0, 0.8, 0); fpInput.Position = UDim2.new(0.6, 0, 0.1, 0); fpInput.BackgroundColor3 = Color3.fromRGB(50, 50, 50); fpInput.Text = tostring(flingPower); fpInput.TextColor3 = Color3.new(1, 1, 1); fpInput.Font = Enum.Font.GothamBold; fpInput.TextSize = 10; Instance.new("UICorner", fpInput)
-	fpInput.FocusLost:Connect(function() local val = tonumber(fpInput.Text); if val then flingPower = val else fpInput.Text = tostring(flingPower) end end)
+	fpInput.FocusLost:Connect(function() local val = tonumber(fpInput.Text); if val then flingPower = val; saveSettings() else fpInput.Text = tostring(flingPower) end end)
+
+	local fdBtn = createBtn("FLING DIR: LOOK", UDim2.new(0.05, 0, 0, 335), UDim2.new(0.9, 0, 0, 35), followFrame); fdBtn.TextSize = 10; fdBtn.MouseButton1Click:Connect(function()
+		if flingDirection == "Look" then flingDirection = "Right"
+		elseif flingDirection == "Right" then flingDirection = "Up"
+		else flingDirection = "Look" end
+		fdBtn.Text = "FLING DIR: " .. flingDirection:upper(); saveSettings()
+	end)
 	
 	local pi = Instance.new("TextBox", presetFrame); pi.Size = UDim2.new(0.9,0,0,30); pi.Position = UDim2.new(0.05,0,0,40); pi.BackgroundColor3 = Color3.fromRGB(40,40,40); pi.TextColor3 = Color3.new(1,1,1); pi.PlaceholderText = "Preset Name..."; pi.Font = Enum.Font.GothamBold; Instance.new("UICorner", pi)
-	local rb = createBtn("REPEAT: OFF", UDim2.new(0.05, 0, 0, 80), UDim2.new(0.9, 0, 0, 30), presetFrame); local function updateRB() rb.Text = "REPEAT: "..(presetRepeat and "ON" or "OFF"); rb.BackgroundColor3 = presetRepeat and Color3.fromRGB(100,100,40) or Color3.fromRGB(50,50,50) end; rb.MouseButton1Click:Connect(function() presetRepeat = not presetRepeat updateRB() end); updateRB()
+	local rb = createBtn("REPEAT: OFF", UDim2.new(0.05, 0, 0, 80), UDim2.new(0.9, 0, 0, 30), presetFrame); local function updateRB() rb.Text = "REPEAT: "..(presetRepeat and "ON" or "OFF"); rb.BackgroundColor3 = presetRepeat and Color3.fromRGB(100,100,40) or Color3.fromRGB(50,50,50) end; rb.MouseButton1Click:Connect(function() presetRepeat = not presetRepeat; updateRB(); saveSettings() end); updateRB()
 	local function handlePreset(m) local n = pi.Text; if n == "" then return end
 		if m == "save" then local d = {}; for t, data in pairs(heldParts) do table.insert(d, {Name = t.Name, Offset = {(partMemory[t] or CFrame.new()):GetComponents()}, Spin = data.Spin, Orbit = data.Orbit}) end
 			if writefile then if not isfolder("grabber_presets") then makefolder("grabber_presets") end writefile("grabber_presets/"..n..".json", HttpService:JSONEncode(d)) end
@@ -403,7 +475,6 @@ RunService.Heartbeat:Connect(function(dt)
 	local char = player.Character; if not char then return end
 	local root = char:FindFirstChild("HumanoidRootPart"); rightHand = char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm"); isFollowing = UserInputService:IsKeyDown(followHotkey); local list = getHeldList()
 	
-	-- Improved Lock Selection & Logic
 	if lockOnEnabled then
 		local nearPlayer = getClosestPlayerToMouse()
 		if nearPlayer and nearPlayer ~= lockedTargetRoot then
@@ -416,7 +487,6 @@ RunService.Heartbeat:Connect(function(dt)
 		lockedTargetRoot = nil
 	end
 
-	-- Lock On Break/Validity Conditions
 	if lockedTargetRoot then
 		local breakLock = false
 		local currentVel = lockedTargetRoot.AssemblyLinearVelocity
@@ -458,14 +528,25 @@ RunService.Heartbeat:Connect(function(dt)
 			if data.TargetAtt then 
 				if isFocused and isFollowing then 
 					local targetPos = mouse.Hit.Position
-					if playerFlingEnabled and finalTargetRoot then
+					local targetRoot = finalTargetRoot or (flingMode and playerTargetRoot)
+					
+					if (playerFlingEnabled or flingMode) and targetRoot then
 						isActuallyFlinging = true
 						local swing = math.sin(tick() * 60) * 6
-						targetPos = finalTargetRoot.Position + (finalTargetRoot.CFrame.LookVector * swing)
-					elseif flingMode and playerTargetRoot then
-						isActuallyFlinging = true
-						local swing = math.sin(tick() * 60) * 6
-						targetPos = playerTargetRoot.Position + (playerTargetRoot.CFrame.LookVector * swing)
+						local targetBasePos = targetRoot.Position
+						
+						if predictionEnabled then
+							local velocity = targetRoot.AssemblyLinearVelocity
+							local dist = (targetBasePos - target.Position).Magnitude
+							local predictTime = math.clamp(dist / 500, 0.01, 0.25) * predictionStrength
+							targetBasePos = targetBasePos + (velocity * predictTime)
+						end
+						
+						local dirVec = targetRoot.CFrame.LookVector
+						if flingDirection == "Right" then dirVec = targetRoot.CFrame.RightVector
+						elseif flingDirection == "Up" then dirVec = targetRoot.CFrame.UpVector end
+						
+						targetPos = targetBasePos + (dirVec * swing)
 					end
 					
 					data.TargetAtt.WorldCFrame = CFrame.new(targetPos) * offset.Rotation
@@ -480,17 +561,15 @@ RunService.Heartbeat:Connect(function(dt)
 						partMemory[target] = baseCFrame:Inverse() * data.TargetAtt.WorldCFrame
 					end
 				else
-					-- Return to Hand/Orbit
 					data.TargetAtt.WorldCFrame = isOrbiting and (CFrame.new((baseCFrame * CFrame.new(offset.Position)).Position) * offset.Rotation) or (baseCFrame * offset)
 				end 
 			end
 			
-			-- Velocity Cleanup (Reset when not flinging)
 			if not isActuallyFlinging then
 				for _, p in ipairs(data.AffectedParts) do
 					if keepOwnership then
 						local rv = 14.4 + (math.random() * 2.1)
-						p.Velocity = Vector3.new(rv, rv, rv)
+						p.AssemblyLinearVelocity = Vector3.new(rv, rv, rv)
 					else
 						p.AssemblyLinearVelocity = Vector3.new(0,0,0)
 						p.AssemblyAngularVelocity = Vector3.new(0,0,0)

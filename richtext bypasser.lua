@@ -6,7 +6,6 @@
 -- auto removes itself if you reexecute no need to rejoin if something breaks
 -- attempts to save custom remotes per game if your executor supports it
 -- allows you to do changes to text in the messagebox ex !redtext!red would make it red !btext!b bold !size(35)text!size makes it bigger etc
-
 -- ChatBypass richtext edition 
 local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
@@ -174,6 +173,7 @@ local AutoMode = false
 local HexMode = false
 local HexAntiSpam = false
 local FilterReset = true
+local ReplaceSpaces = false
 
 local AllLettersToggle = Instance.new("TextButton")
 AllLettersToggle.Size = UDim2.new(0.3, 0, 0.08, 0)
@@ -215,11 +215,18 @@ HexModeToggle.TextColor3 = Color3.new(1,1,1)
 HexModeToggle.Parent = Frame
 
 local FilterResetToggle = Instance.new("TextButton")
-FilterResetToggle.Size = UDim2.new(0.9, 0, 0.08, 0)
+FilterResetToggle.Size = UDim2.new(0.44, 0, 0.08, 0)
 FilterResetToggle.Position = UDim2.new(0.05, 0, 0.66, 0)
 FilterResetToggle.Text = "Filter Reset: ON"
 FilterResetToggle.BackgroundColor3 = Color3.fromRGB(0, 140, 0)
 FilterResetToggle.Parent = Frame
+
+local ReplaceSpacesToggle = Instance.new("TextButton")
+ReplaceSpacesToggle.Size = UDim2.new(0.44, 0, 0.08, 0)
+ReplaceSpacesToggle.Position = UDim2.new(0.53, 0, 0.66, 0)
+ReplaceSpacesToggle.Text = "Replace Spaces: OFF"
+ReplaceSpacesToggle.BackgroundColor3 = Color3.fromRGB(140, 0, 0)
+ReplaceSpacesToggle.Parent = Frame
 
 local CustomRemoteButton = Instance.new("TextButton")
 CustomRemoteButton.Size = UDim2.new(0.9, 0, 0.08, 0)
@@ -559,7 +566,9 @@ local function getProcessedText(forPreview)
                     end
                 end
 
-                if isEmo or #codes > 1 then
+                if char == " " and not ReplaceSpaces then
+                    table.insert(result, " ")
+                elseif isEmo or #codes > 1 then
                     table.insert(result, char)
                 else
                     table.insert(result, "&#" .. codes[1] .. ";")
@@ -574,8 +583,12 @@ local function getProcessedText(forPreview)
              local result = {}
              for first, last in utf8.graphemes(segment) do
                 local char = segment:sub(first, last)
-                local randLetter = safeLetters[math.random(1, #safeLetters)]
-                table.insert(result, "<" .. randLetter .. ">" .. char .. "</" .. randLetter .. ">")
+                if char == " " and not ReplaceSpaces then
+                    table.insert(result, " ")
+                else
+                    local randLetter = safeLetters[math.random(1, #safeLetters)]
+                    table.insert(result, "<" .. randLetter .. ">" .. char .. "</" .. randLetter .. ">")
+                end
              end
              return table.concat(result, "")
         end
@@ -588,14 +601,24 @@ local function getProcessedText(forPreview)
             local count = 0
             for first, last in utf8.graphemes(segment) do
                 local char = segment:sub(first, last)
-                if count == 0 then current = open end
-                current = current .. char
-                count = count + 1
-                if count == interval then
-                    current = current .. close
-                    table.insert(result, current)
-                    count = 0
-                    current = ""
+                if char == " " and not ReplaceSpaces then
+                    if count > 0 then
+                        current = current .. close
+                        table.insert(result, current)
+                        count = 0
+                        current = ""
+                    end
+                    table.insert(result, " ")
+                else
+                    if count == 0 then current = open end
+                    current = current .. char
+                    count = count + 1
+                    if count == interval then
+                        current = current .. close
+                        table.insert(result, current)
+                        count = 0
+                        current = ""
+                    end
                 end
             end
             if count > 0 then
@@ -634,19 +657,27 @@ local function getProcessedText(forPreview)
                     end
                 end
              end
-             return table.concat(words, " ")
+             local separator = (ReplaceSpaces and open) and (open .. " " .. close) or " "
+             return table.concat(words, separator)
 
         -- All Letters
         elseif AllLetters then
             local result = {}
             for first, last in utf8.graphemes(segment) do
                 local char = segment:sub(first, last)
-                table.insert(result, open .. char .. close)
+                if char == " " and not ReplaceSpaces then
+                    table.insert(result, " ")
+                else
+                    table.insert(result, open .. char .. close)
+                end
             end
             return table.concat(result, "")
 
         -- Default (No Obfuscation)
         else
+            if ReplaceSpaces then
+                return segment:gsub(" ", "\226\128\131") -- Use bypass char for default if enabled
+            end
             return segment
         end
     end
@@ -856,6 +887,13 @@ FilterResetToggle.MouseButton1Click:Connect(function()
     FilterReset = not FilterReset
     FilterResetToggle.Text = "Filter Reset: " .. (FilterReset and "ON" or "OFF")
     FilterResetToggle.BackgroundColor3 = FilterReset and Color3.fromRGB(0, 180, 0) or Color3.fromRGB(180, 0, 0)
+end)
+
+ReplaceSpacesToggle.MouseButton1Click:Connect(function()
+    ReplaceSpaces = not ReplaceSpaces
+    ReplaceSpacesToggle.Text = "Replace Spaces: " .. (ReplaceSpaces and "ON" or "OFF")
+    ReplaceSpacesToggle.BackgroundColor3 = ReplaceSpaces and Color3.fromRGB(0, 180, 0) or Color3.fromRGB(140, 0, 0)
+    updatePreview()
 end)
 
 -- SEND

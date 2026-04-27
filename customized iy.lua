@@ -4506,7 +4506,8 @@ CMDs[#CMDs + 1] = {NAME = 'inspect / examine [player]', DESC = 'Opens InspectMen
 CMDs[#CMDs + 1] = {NAME = 'age [player]', DESC = 'Tells you the age of a player'}
 CMDs[#CMDs + 1] = {NAME = 'chatage [player]', DESC = 'Chats the age of a player'}
 CMDs[#CMDs + 1] = {NAME = 'joindate / jd [player]', DESC = 'Tells you the date the player joined Roblox'}
-CMDs[#CMDs + 1] = {NAME = 'stealtool/gettool [player]', DESC = 'steal player held tool (clientsided)'}
+CMDs[#CMDs + 1] = {NAME = 'stealtool/gettool [player]', DESC = 'steal player held tool or specific tool in backpack (clientsided)'}
+CMDs[#CMDs + 1] = {NAME = 'stealtools/gettools [player]', DESC = 'steal player held tool and tools in backpack (clientsided)'}
 CMDs[#CMDs + 1] = {NAME = 'chatjoindate / cjd [player]', DESC = 'Chats the date the player joined Roblox'}
 CMDs[#CMDs + 1] = {NAME = 'copyname / copyuser [player]', DESC = 'Copies a players full username to your clipboard'}
 CMDs[#CMDs + 1] = {NAME = 'userid / id [player]', DESC = 'Notifies a players user ID'}

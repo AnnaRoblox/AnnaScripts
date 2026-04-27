@@ -1,6 +1,5 @@
 ---- simple chat bypass script custom chat games
 ----- you need to change your language to use this recomendend: Қазақ Тілі*
----- to use it click the settings icon and select the chat remote
 local HttpService = game:GetService("HttpService")
 local UserInputService = game:GetService("UserInputService")
 local CoreGui = game:GetService("CoreGui")
@@ -21,7 +20,7 @@ local replacements = {
     ["s"] = "ธ", ["u"] = "ıɹ", ["l"] = "ӏ", ["z"] = "ⴭ",
     ["b"] = "lɔ", ["r"] = "ꞅ", ["a"] = "α", ["o"] = "ჿ",
     ["c"] = "ჺ", ["n"] = "ıา", ["h"] = "lา", ["m"] = "ıาา",
-    ["w"] = "ıɹɹ", ["i"] = "ὶ", ["g"] = "ⴒ", ["e"] = "ɐ", ["."] = ".", [" "] = FAKE_SPACE
+    ["w"] = "ıɹɹ", ["i"] = "ὶ", ["g"] = "ⴒ", ["e"] = "ɐ", ["k"] = "ı‹", ["."] = ".", [" "] = FAKE_SPACE
 }
 
 -- Persistence Logic

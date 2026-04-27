@@ -10284,39 +10284,99 @@ addcmd('tools',{'gears'},function(args, speaker)
 	copy(ReplicatedStorage)
 	notify('Tools','Copied tools from ReplicatedStorage and Lighting')
 end)
-addcmd('gettool', {'stealtool', 'grabtool'}, function(args, speaker)
+
+addcmd('gettool', {'stealtool', 'grabtool', 'st'}, function(args, speaker)
     local players = getPlayer(args[1], speaker)
+    local toolNameArg = args[2] -- The specific tool name to look for
     local myChar = speaker.Character
+    local myBackpack = speaker:FindFirstChild("Backpack")
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
     
-    if not myChar or not myRoot then return end
+    if not myChar or not myRoot or not myBackpack then return end
 
     for _, v in pairs(players) do
         local targetPlayer = game.Players:FindFirstChild(v)
-        if targetPlayer and targetPlayer.Character then
-            -- A tool is "in hand" when it is a direct child of the Character
-            local tool = targetPlayer.Character:FindFirstChildOfClass("Tool")
+        if targetPlayer then
+            local foundTool = nil
             
-            if tool then
-                -- 1. If the tool has a handle, we snap it to us first
-                local handle = tool:FindFirstChild("Handle")
+            -- Priority 1: Check if they are holding the tool
+            local heldTool = targetPlayer.Character and targetPlayer.Character:FindFirstChildOfClass("Tool")
+            if heldTool then
+                -- If no specific tool name was provided, or if the held tool matches the name
+                if not toolNameArg or heldTool.Name:lower() == toolNameArg:lower() then
+                    foundTool = heldTool
+                end
+            end
+
+            -- Priority 2: Check Backpack if not found in hand (or if specifically looking for a name)
+            if not foundTool and targetPlayer:FindFirstChild("Backpack") then
+                if toolNameArg then
+                    foundTool = targetPlayer.Backpack:FindFirstChild(toolNameArg, true) -- true for recursive search
+                end
+            end
+
+            if foundTool then
+                local handle = foundTool:FindFirstChild("Handle")
                 if handle and handle:IsA("BasePart") then
-                    -- We stop its velocity so it doesn't fly away
                     handle.Velocity = Vector3.new(0, 0, 0)
                     handle.CFrame = myRoot.CFrame
                 end
 
-                -- 2. Attempt to change parentage
-                -- Note: This is often client-side only in FE games
-                tool.Parent = myChar
+                -- Move to our backpack
+                foundTool.Parent = myBackpack
                 
                 if notify then
-                    notify('Tool Grabbed', 'Attempted to take ' .. tool.Name .. ' from ' .. targetPlayer.Name)
+                    notify('Tool Grabbed', 'Taken: ' .. foundTool.Name .. ' from ' .. targetPlayer.Name)
                 end
             else
                 if notify then
-                    notify('Tool Error', targetPlayer.Name .. ' is not holding a tool.')
+                    notify('Tool Error', 'Could not find tool on ' .. targetPlayer.Name)
                 end
+            end
+        end
+    end
+end)
+
+
+addcmd('stealtools', {'sts', 'graballtools'}, function(args, speaker)
+    local players = getPlayer(args[1], speaker)
+    local myBackpack = speaker:FindFirstChild("Backpack")
+    local myChar = speaker.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+
+    if not myBackpack or not myRoot then return end
+
+    for _, v in pairs(players) do
+        local targetPlayer = game.Players:FindFirstChild(v)
+        if targetPlayer then
+            local targetsTools = {}
+
+            -- Gather from Character
+            if targetPlayer.Character then
+                for _, item in pairs(targetPlayer.Character:GetChildren()) do
+                    if item:IsA("Tool") then table.insert(targetsTools, item) end
+                end
+            end
+
+            -- Gather from Backpack
+            if targetPlayer:FindFirstChild("Backpack") then
+                for _, item in pairs(targetPlayer.Backpack:GetChildren()) do
+                    if item:IsA("Tool") then table.insert(targetsTools, item) end
+                end
+            end
+
+            -- Move all gathered tools
+            for _, tool in pairs(targetsTools) do
+                local handle = tool:FindFirstChild("Handle")
+                if handle and handle:IsA("BasePart") then
+                    handle.Velocity = Vector3.new(0, 0, 0)
+                    handle.CFrame = myRoot.CFrame
+                end
+                tool.Parent = myBackpack
+            end
+
+            if notify and #targetsTools > 0 then
+                notify('Steal Tools', 'Massively "borrowed" ' .. #targetsTools .. ' tools from ' .. targetPlayer.Name)
             end
         end
     end
@@ -10569,7 +10629,7 @@ addcmd('unsuck', {}, function(args, speaker)
         myHum.Sit = false
     end
     
-    if notify then notify('suck', 'unsucked.') end
+    if notify then notify('suck', 'unattached.') end
 end)
 		
 addcmd('unheadsit',{},function(args, speaker)

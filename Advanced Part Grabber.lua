@@ -112,7 +112,7 @@ local function loadSettings()
 end
 loadSettings()
 
--- Optimized Auto Reclaim Loop
+-- Optimized Auto Reclaim Loop with Non-Flashing Visuals
 task.spawn(function()
 	while task.wait() do
 		if autoReclaim then
@@ -122,35 +122,113 @@ task.spawn(function()
 			end
 			
 			if #lostParts > 0 then
-				local char = player.Character; local root = char and char:FindFirstChild("HumanoidRootPart")
-				if root then
-					local oldCF = root.CFrame
-					for _, p in ipairs(lostParts) do
-						if p and p.Parent then
-							root.CFrame = p.CFrame
-							-- Wait until ownership gained with a safety timeout
-							local timeout = tick() + 0.5
-							while p and p.Parent and p.ReceiveAge > 0 and tick() < timeout do
+				local char = player.Character
+				local root = char and char:FindFirstChild("HumanoidRootPart")
+				local hum = char and char:FindFirstChildOfClass("Humanoid")
+				
+				if root and hum and hum.Health > 0 then
+					local reclaimNotify, clone, sync
+					local originalTrans = {}
+					local cam = workspace.CurrentCamera
+					local oldSubject = cam.CameraSubject
+					local oldWalkSpeed, oldJumpPower = hum.WalkSpeed, hum.JumpPower
+
+					local success, err = pcall(function()
+						-- Create Notification
+						reclaimNotify = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
+						local notifyLabel = Instance.new("TextLabel", reclaimNotify)
+						notifyLabel.Size = UDim2.new(0, 280, 0, 45)
+						notifyLabel.Position = UDim2.new(0.5, -140, 0.15, 0)
+						notifyLabel.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
+						notifyLabel.Text = "RECLAIMING OWNERSHIP..."
+						notifyLabel.TextColor3 = Color3.new(1, 1, 1)
+						notifyLabel.TextStrokeTransparency = 0
+						notifyLabel.Font = Enum.Font.GothamBold
+						notifyLabel.TextSize = 14
+						Instance.new("UICorner", notifyLabel)
+						Instance.new("UIStroke", notifyLabel).Color = Color3.new(0, 0, 0)
+
+						-- Create Visual Clone
+						local arch = char.Archivable
+						char.Archivable = true
+						clone = char:Clone()
+						char.Archivable = arch
+						clone.Name = "ReclaimClone"
+						clone.Parent = workspace
+						
+						for _, v in ipairs(clone:GetDescendants()) do
+							if v:IsA("BasePart") then
+								v.CanCollide = false; v.CanTouch = false; v.CanQuery = false; v.Anchored = true
+							elseif v:IsA("LocalScript") or v:IsA("Script") then
+								v.Enabled = false
+							end
+						end
+						local cHum = clone:FindFirstChildOfClass("Humanoid")
+						if cHum then cHum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None end
+						
+						-- Hide Real Character
+						for _, v in ipairs(char:GetDescendants()) do
+							if v:IsA("BasePart") or v:IsA("Decal") then
+								originalTrans[v] = v.Transparency
+								if v.Name ~= "HumanoidRootPart" then v.Transparency = 1 end
+							end
+						end
+						
+						cam.CameraSubject = cHum or clone
+						local isFetching = false
+						
+						-- Sync Clone to Real Body (when not fetching)
+						sync = RunService.RenderStepped:Connect(function()
+							if clone and root and not isFetching then
+								clone:SetPrimaryPartCFrame(root.CFrame)
+							end
+						end)
+						
+						for _, p in ipairs(lostParts) do
+							if not (char.Parent and hum.Health > 0 and autoReclaim) then break end
+							if p and p.Parent then
+								isFetching = true
+								hum.WalkSpeed = 0
+								hum.JumpPower = 0
+								
+								local fetchPos = p.CFrame
+								root.CFrame = fetchPos
+								
+								-- Ownership Wait
+								local timeout = tick() + 0.5
+								while p and p.Parent and p.ReceiveAge > 0 and tick() < timeout do
+									RunService.Heartbeat:Wait()
+									root.CFrame = p.CFrame -- Force stay at part
+								end
+								
+								for i = 1, autoReclaimStrength * 2 do RunService.Heartbeat:Wait() end
+								
+								-- Return to Clone
+								if clone and clone.PrimaryPart then
+									root.CFrame = clone.PrimaryPart.CFrame
+								end
+								
+								isFetching = false
+								hum.WalkSpeed = oldWalkSpeed
+								hum.JumpPower = oldJumpPower
 								RunService.Heartbeat:Wait()
 							end
-							-- Small additional buffer to ensure ownership stickiness
-							for i = 1, autoReclaimStrength do RunService.Heartbeat:Wait() end
 						end
+					end)
+
+					-- Cleanup
+					if sync then sync:Disconnect() end
+					if hum then hum.WalkSpeed = oldWalkSpeed; hum.JumpPower = oldJumpPower end
+					if cam then cam.CameraSubject = oldSubject end
+					for v, trans in pairs(originalTrans) do
+						if v and v.Parent then v.Transparency = trans end
 					end
-					
-					local dist = (root.Position - oldCF.Position).Magnitude
-					if dist > 30 then
-						local info = TweenInfo.new(dist / 600, Enum.EasingStyle.Linear)
-						local tween = TweenService:Create(root, info, {CFrame = oldCF})
-						tween:Play()
-						tween.Completed:Wait()
-					else
-						root.CFrame = oldCF
-					end
+					if reclaimNotify then reclaimNotify:Destroy() end
+					if clone then clone:Destroy() end
 				end
 			end
 		end
-		task.wait(math.max(0.05, 0.2 / autoReclaimStrength))
+		task.wait(0.1)
 	end
 end)
 

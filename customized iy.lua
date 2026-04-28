@@ -11509,25 +11509,27 @@ addcmd('dupetools', {'clonetools'}, function(args, speaker)
 end)
 
 local RS = RunService.RenderStepped
+local ActiveTransfers = {} -- Track active connections per tool to prevent overlapping transfers
+
 addcmd('givetool', {'gt'}, function(args, speaker)
 	local Players = game:GetService("Players")
 	local RunService = game:GetService("RunService")
 
-	-- 1. Get the target player
+	-- 1. Get the target players
 	local targetNameInfo = getPlayer(args[1], speaker)
-	local targetPlayer = targetNameInfo and Players[targetNameInfo[1]]
-	
-	-- Determine mode: 'a' for attachment, 'c' (or anything else/nil) for CFrame
-	local mode = (args[2] and string.lower(args[2]) == "a") and "a" or "c"
+	if not targetNameInfo then return end
 
 	local myChar = speaker.Character
-	local targetChar = targetPlayer and targetPlayer.Character
+	if not myChar then return end
 
-	if myChar and targetChar then
-		local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
+	-- 2. Loop through ALL target players
+	for _, targetName in ipairs(targetNameInfo) do
+		local targetPlayer = Players:FindFirstChild(targetName)
+		local targetChar = targetPlayer and targetPlayer.Character
+		local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
 		
 		if targetRoot then
-			-- 2. Loop through ALL tools in the character
+			-- 3. Loop through ALL tools in the character
 			for _, obj in ipairs(myChar:GetChildren()) do
 				if obj:IsA("Tool") and obj:FindFirstChild("Handle") then
 					
@@ -11535,8 +11537,16 @@ addcmd('givetool', {'gt'}, function(args, speaker)
 						local tool = obj
 						local handle = tool.Handle
 
-						-- A. Prevent Speaker Pickup
+						-- Cancel any existing transfer for this specific tool
+						if ActiveTransfers[tool] then
+							ActiveTransfers[tool]:Disconnect()
+							ActiveTransfers[tool] = nil
+						end
+
+						-- A. Prevent Speaker Pickup and Hide during process
 						handle.CanTouch = false
+						handle.CanCollide = false
+						handle.Transparency = 1
 
 						-- B. Fix the "TP Player" glitch
 						local rightArm = myChar:FindFirstChild("Right Arm") or myChar:FindFirstChild("RightHand")
@@ -11544,90 +11554,55 @@ addcmd('givetool', {'gt'}, function(args, speaker)
 							local grip = rightArm:FindFirstChild("RightGrip")
 							if grip then grip:Destroy() end
 						end
+						task.wait(0.2)
 
 						-- C. Drop and Reset Physics
 						tool.Parent = workspace
 						handle.Velocity = Vector3.zero
 						handle.RotVelocity = Vector3.zero
 						
-						if mode == "a" then
-							-- == ATTACHMENT MODE ==
-							local targetAtt = Instance.new("Attachment")
-							targetAtt.Name = "GT_TargetAtt"
-							targetAtt.Parent = targetRoot
-
-							local handleAtt = Instance.new("Attachment")
-							handleAtt.Name = "GT_HandleAtt"
-							handleAtt.Parent = handle
-
-							local alignPos = Instance.new("AlignPosition")
-							alignPos.Attachment0 = handleAtt
-							alignPos.Attachment1 = targetAtt
-							alignPos.Mode = Enum.PositionAlignmentMode.TwoAttachment
-							alignPos.RigidityEnabled = true
-							alignPos.Parent = handle
-
-							local alignOri = Instance.new("AlignOrientation")
-							alignOri.Attachment0 = handleAtt
-							alignOri.Attachment1 = targetAtt
-							alignOri.Mode = Enum.OrientationAlignmentMode.TwoAttachment
-							alignOri.RigidityEnabled = true
-							alignOri.Parent = handle
-
-							-- Cleanup when picked up
-							local pickupConn
-							pickupConn = tool.AncestryChanged:Connect(function(_, newParent)
-								if newParent ~= workspace then
-									if targetAtt then targetAtt:Destroy() end
-									if handleAtt then handleAtt:Destroy() end
-									if alignPos then alignPos:Destroy() end
-									if alignOri then alignOri:Destroy() end
-									if pickupConn then pickupConn:Disconnect() end
-								end
-							end)
-
-							-- Re-enable CanTouch after a tiny delay
-							task.delay(0.2, function()
-								if handle then handle.CanTouch = true end
-							end)
-
-							-- Timeout safety cleanup
-							task.delay(10, function()
-								if handle then handle.CanTouch = true end
-								if targetAtt then targetAtt:Destroy() end
-								if handleAtt then handleAtt:Destroy() end
-								if alignPos then alignPos:Destroy() end
-								if alignOri then alignOri:Destroy() end
-								if pickupConn then pickupConn:Disconnect() end
-							end)
-							
-						else
-							-- == CFRAME MODE (DEFAULT) ==
-							local connection
-							local startTime = tick()
-							
-							connection = RunService.Heartbeat:Connect(function()
-								-- Break if tool is gone, picked up, or target lost
-								if not tool or tool.Parent ~= workspace or not targetRoot.Parent then
-									if connection then connection:Disconnect() end
-									return
-								end
-								
-								-- Teleport to target
-								handle.CFrame = targetRoot.CFrame
-
-								-- Re-enable CanTouch after a tiny delay
-								if (tick() - startTime) > 0.2 then
-									handle.CanTouch = false
-								end
-							end)
-
-							-- Timeout safety
-							task.delay(10, function()
+						-- == TOUCH TRANSMITTER MODE ==
+						local connection
+						connection = RunService.Heartbeat:Connect(function()
+							-- Break if tool is gone, picked up, target lost, or connection was manually overridden
+							if not tool or tool.Parent ~= workspace or not targetRoot.Parent or ActiveTransfers[tool] ~= connection then
 								if connection then connection:Disconnect() end
-								if handle then handle.CanTouch = true end 
-							end)
-						end
+								if ActiveTransfers[tool] == connection then ActiveTransfers[tool] = nil end
+								
+								-- Only restore if it wasn't overridden by a new command
+								if handle and (not ActiveTransfers[tool]) then
+									handle.Transparency = 0
+									handle.CanTouch = true
+									handle.CanCollide = true
+								end
+								return
+							end
+							
+							-- Fire TouchInterest using firetouchinterest
+							if firetouchinterest then
+								firetouchinterest(targetRoot, handle, 0)
+								task.wait()
+								firetouchinterest(targetRoot, handle, 1)
+							else
+								-- Fallback to CFrame if not supported
+								handle.CFrame = targetRoot.CFrame
+							end
+						end)
+						
+						ActiveTransfers[tool] = connection
+
+						-- Timeout safety
+						task.delay(5, function()
+							if connection and connection.Connected then 
+								connection:Disconnect() 
+								if ActiveTransfers[tool] == connection then ActiveTransfers[tool] = nil end
+								if handle and (not ActiveTransfers[tool]) then
+									handle.Transparency = 0
+									handle.CanTouch = true
+									handle.CanCollide = true
+								end
+							end
+						end)
 					end)
 				end
 			end
@@ -11639,44 +11614,57 @@ addcmd('givetools', {'gts'}, function(args, speaker)
 	local Players = game:GetService("Players")
 	local RunService = game:GetService("RunService")
 
-	-- 1. Get the target player
+	-- 1. Get the target players
 	local targetNameInfo = getPlayer(args[1], speaker)
-	local targetPlayer = targetNameInfo and Players[targetNameInfo[1]]
+	if not targetNameInfo then return end
+
 	local myChar = speaker.Character
 	local backpack = speaker:FindFirstChild("Backpack")
-	
-	-- Determine mode: 'a' for attachment, 'c' (or anything else/nil) for CFrame
-	local mode = (args[2] and string.lower(args[2]) == "a") and "a" or "c"
+	if not myChar or not backpack then return end
 
-	if targetPlayer and targetPlayer.Character and myChar and backpack then
-		local targetRoot = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+	-- 2. Gather all droppable tools from Backpack and Character
+	local toolsToGive = {}
+	local function checkTool(obj)
+		if obj:IsA("Tool") and obj.CanBeDropped and obj:FindFirstChild("Handle") then
+			table.insert(toolsToGive, obj)
+		end
+	end
+	for _, item in ipairs(backpack:GetChildren()) do checkTool(item) end
+	for _, item in ipairs(myChar:GetChildren()) do checkTool(item) end
+	
+	if #toolsToGive == 0 then return end
+
+	-- 3. Loop through ALL target players
+	for _, targetName in ipairs(targetNameInfo) do
+		local targetPlayer = Players:FindFirstChild(targetName)
+		local targetChar = targetPlayer and targetPlayer.Character
+		local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
 		local hum = myChar:FindFirstChildWhichIsA("Humanoid")
 
 		if targetRoot and hum then
-			-- 2. Gather all droppable tools from Backpack and Character
-			local toolsToGive = {}
-			
-			local function checkTool(obj)
-				if obj:IsA("Tool") and obj.CanBeDropped and obj:FindFirstChild("Handle") then
-					table.insert(toolsToGive, obj)
-				end
-			end
+			-- 4. Process each tool for THIS player
+			for i, tool in ipairs(toolsToGive) do
+				-- If tool is already gone or being transferred to someone else, skip it or wait
+				if not tool.Parent then continue end
 
-			for _, item in ipairs(backpack:GetChildren()) do checkTool(item) end
-			for _, item in ipairs(myChar:GetChildren()) do checkTool(item) end
-
-			-- 3. Process each tool
-			for _, tool in ipairs(toolsToGive) do
 				task.spawn(function()
 					-- Force equip the tool so we can break the Grip
 					hum:EquipTool(tool)
-					task.wait() -- Small yield to let the engine register the equip
+					task.wait(0.3)
 
 					local handle = tool:FindFirstChild("Handle")
 					if not handle then return end
 
-					-- A. Prevent Speaker Pickup
+					-- Cancel any existing transfer for this specific tool
+					if ActiveTransfers[tool] then
+						ActiveTransfers[tool]:Disconnect()
+						ActiveTransfers[tool] = nil
+					end
+
+					-- A. Prevent Speaker Pickup and Hide during process
 					handle.CanTouch = false
+					handle.CanCollide = false
+					handle.Transparency = 1
 
 					-- B. Break the Grip to prevent Speaker TPing
 					local arm = myChar:FindFirstChild("Right Arm") or myChar:FindFirstChild("RightHand")
@@ -11684,91 +11672,58 @@ addcmd('givetools', {'gts'}, function(args, speaker)
 						local grip = arm:FindFirstChild("RightGrip")
 						if grip then grip:Destroy() end
 					end
+					task.wait(0.2)
 
 					-- C. Drop to workspace
 					tool.Parent = workspace
 					handle.Velocity = Vector3.zero
 					handle.RotVelocity = Vector3.zero
 
-					if mode == "a" then
-						-- == ATTACHMENT MODE ==
-						local targetAtt = Instance.new("Attachment")
-						targetAtt.Name = "GTS_TargetAtt"
-						targetAtt.Parent = targetRoot
-
-						local handleAtt = Instance.new("Attachment")
-						handleAtt.Name = "GTS_HandleAtt"
-						handleAtt.Parent = handle
-
-						local alignPos = Instance.new("AlignPosition")
-						alignPos.Attachment0 = handleAtt
-						alignPos.Attachment1 = targetAtt
-						alignPos.Mode = Enum.PositionAlignmentMode.TwoAttachment
-						alignPos.RigidityEnabled = true
-						alignPos.Parent = handle
-
-						local alignOri = Instance.new("AlignOrientation")
-						alignOri.Attachment0 = handleAtt
-						alignOri.Attachment1 = targetAtt
-						alignOri.Mode = Enum.OrientationAlignmentMode.TwoAttachment
-						alignOri.RigidityEnabled = true
-						alignOri.Parent = handle
-
-						-- Cleanup when picked up
-						local pickupConn
-						pickupConn = tool.AncestryChanged:Connect(function(_, newParent)
-							if newParent ~= workspace then
-								if targetAtt then targetAtt:Destroy() end
-								if handleAtt then handleAtt:Destroy() end
-								if alignPos then alignPos:Destroy() end
-								if alignOri then alignOri:Destroy() end
-								if pickupConn then pickupConn:Disconnect() end
-							end
-						end)
-
-						-- Allow target to pick up after 0.2s
-						task.delay(0.2, function()
-							if handle then handle.CanTouch = true end
-						end)
-
-						-- Timeout safety cleanup
-						task.delay(3, function()
-							if handle then handle.CanTouch = true end
-							if targetAtt then targetAtt:Destroy() end
-							if handleAtt then handleAtt:Destroy() end
-							if alignPos then alignPos:Destroy() end
-							if alignOri then alignOri:Destroy() end
-							if pickupConn then pickupConn:Disconnect() end
-						end)
-
-					else
-						-- == CFRAME MODE (DEFAULT) ==
-						local connection
-						local startTime = tick()
-
-						connection = RunService.Heartbeat:Connect(function()
-							if not tool or tool.Parent ~= workspace or not targetRoot.Parent then
-								if connection then connection:Disconnect() end
-								return
-							end
-
-							handle.CFrame = targetRoot.CFrame
-
-							-- Allow target to pick up after 0.2s
-							if (tick() - startTime) > 0.2 then
-								handle.CanTouch = false
-							end
-						end)
-
-						-- Timeout safety
-						task.delay(3, function()
+					-- == TOUCH TRANSMITTER MODE ==
+					local connection
+					connection = RunService.Heartbeat:Connect(function()
+						-- Break if tool is gone, picked up, target lost, or overridden
+						if not tool or tool.Parent ~= workspace or not targetRoot.Parent or ActiveTransfers[tool] ~= connection then
 							if connection then connection:Disconnect() end
-							if handle then handle.CanTouch = true end
-						end)
-					end
+							if ActiveTransfers[tool] == connection then ActiveTransfers[tool] = nil end
+							
+							-- Only restore if no new transfer is active
+							if handle and (not ActiveTransfers[tool]) then
+								handle.Transparency = 0
+								handle.CanTouch = true
+								handle.CanCollide = true
+							end
+							return
+						end
+
+						-- Fire TouchInterest using firetouchinterest
+						if firetouchinterest then
+							firetouchinterest(targetRoot, handle, 0)
+							task.wait()
+							firetouchinterest(targetRoot, handle, 1)
+						else
+							-- Fallback to CFrame if not supported
+							handle.CFrame = targetRoot.CFrame
+						end
+					end)
+					
+					ActiveTransfers[tool] = connection
+
+					-- Timeout safety
+					task.delay(5, function()
+						if connection and connection.Connected then 
+							connection:Disconnect() 
+							if ActiveTransfers[tool] == connection then ActiveTransfers[tool] = nil end
+							if handle and (not ActiveTransfers[tool]) then
+								handle.Transparency = 0
+								handle.CanTouch = true
+								handle.CanCollide = true
+							end
+						end
+					end)
 				end)
 				-- Small delay between tools to prevent physics engine lag
-				task.wait(0.05)
+				task.wait(0.1)
 			end
 		end
 	end
@@ -12377,7 +12332,6 @@ function kill(speaker,target,fast)
 end
 
 local loopKilledPlayers = {} -- Persistent table to track loop-kill states
-
 addcmd('kill', {'fekill'}, function(args, speaker)
     local Players = game:GetService("Players")
     local RunService = game:GetService("RunService")

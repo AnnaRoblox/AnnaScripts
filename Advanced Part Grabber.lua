@@ -51,7 +51,7 @@ local lockedHighlight = nil
 local flingPower = 30000
 local followHotkey, followKeepPosition, isFollowing = Enum.KeyCode.LeftControl, false, false
 local highlightEnabled = false
-local selectedPartIndex, currentIncrement = 1, 0.2 
+local selectedPartIndex, currentIncrement, currentOffset = 1, 0.2, 0 
 local unanchoredCount, anchoredCache, unanchoredParts, statsLabel = 0, {}, {}, nil
 
 -- Settings System
@@ -75,7 +75,8 @@ local function saveSettings()
 		followHotkey = followHotkey.Name,
 		followKeepPosition = followKeepPosition,
 		highlightEnabled = highlightEnabled,
-		currentIncrement = currentIncrement
+		currentIncrement = currentIncrement,
+		currentOffset = currentOffset
 	}
 	pcall(function()
 		if writefile then
@@ -106,6 +107,7 @@ local function loadSettings()
 				if data.followKeepPosition ~= nil then followKeepPosition = data.followKeepPosition end
 				if data.highlightEnabled ~= nil then highlightEnabled = data.highlightEnabled end
 				if data.currentIncrement ~= nil then currentIncrement = data.currentIncrement end
+				if data.currentOffset ~= nil then currentOffset = data.currentOffset end
 			end
 		end
 	end)
@@ -262,10 +264,6 @@ local function getClosestPlayerToMouse()
 	return closest
 end
 
-local highlightEnabled = false
-local selectedPartIndex, currentIncrement = 1, 0.2 
-local unanchoredCount, anchoredCache, unanchoredParts, statsLabel = 0, {}, {}, nil
-
 -- Forward Declarations
 local updateSelectionDisplay, updateSpinDisplay, updateDirDisplay, updateOrbitDisplay, updateTypeDisplay, updateMainLayout, updateToggles
 
@@ -276,8 +274,14 @@ local function applyHighlight(target, enable)
 			local h = Instance.new("Highlight", target)
 			h.Name = "GrabHighlight"; h.FillColor = Color3.fromRGB(255, 255, 255); h.OutlineColor = Color3.fromRGB(0, 160, 255)
 		end
+		if target:IsA("BasePart") and target.Transparency >= 0.95 then
+			target.Transparency = 0.5
+		end
 	else
 		local h = target:FindFirstChild("GrabHighlight"); if h then h:Destroy() end
+		if target:IsA("BasePart") and target.Transparency == 0.5 then
+			target.Transparency = 1
+		end
 	end
 end
 
@@ -441,22 +445,64 @@ local function createEditGui()
 	createBtn("<", UDim2.new(0, 0, 0, 0), UDim2.new(0, 30, 1, 0), selFrame).MouseButton1Click:Connect(function() selectedPartIndex = selectedPartIndex > 1 and selectedPartIndex - 1 or #getHeldList(); updateSelectionDisplay() end)
 	createBtn(">", UDim2.new(1, -30, 0, 0), UDim2.new(0, 30, 1, 0), selFrame).MouseButton1Click:Connect(function() selectedPartIndex = selectedPartIndex < #getHeldList() and selectedPartIndex + 1 or 1; updateSelectionDisplay() end)
 
-	local incFrame = Instance.new("Frame", mainFrame); incFrame.Size = UDim2.new(0.9, 0, 0, 30); incFrame.Position = UDim2.new(0.05, 0, 0, 65); incFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30); Instance.new("UICorner", incFrame)
-	Instance.new("TextLabel", incFrame).Size = UDim2.new(0.6, 0, 1, 0); incFrame.TextLabel.Text = "INCREMENT:"; incFrame.TextLabel.TextColor3 = Color3.fromRGB(200, 200, 200); incFrame.TextLabel.BackgroundTransparency = 1; incFrame.TextLabel.Font = Enum.Font.GothamBold; incFrame.TextLabel.TextSize = 10
-	local incInput = Instance.new("TextBox", incFrame); incInput.Size = UDim2.new(0.35, 0, 0.8, 0); incInput.Position = UDim2.new(0.6, 0, 0.1, 0); incInput.BackgroundColor3 = Color3.fromRGB(50, 50, 50); incInput.Text = tostring(currentIncrement); incInput.TextColor3 = Color3.new(1, 1, 1); incInput.Font = Enum.Font.GothamBold; incInput.TextSize = 12; Instance.new("UICorner", incInput)
+	local incFrame = Instance.new("Frame", mainFrame); incFrame.Size = UDim2.new(0.425, 0, 0, 30); incFrame.Position = UDim2.new(0.05, 0, 0, 65); incFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30); Instance.new("UICorner", incFrame)
+	Instance.new("TextLabel", incFrame).Size = UDim2.new(0.5, 0, 1, 0); incFrame.TextLabel.Text = "INC:"; incFrame.TextLabel.TextColor3 = Color3.fromRGB(200, 200, 200); incFrame.TextLabel.BackgroundTransparency = 1; incFrame.TextLabel.Font = Enum.Font.GothamBold; incFrame.TextLabel.TextSize = 8
+	local incInput = Instance.new("TextBox", incFrame); incInput.Size = UDim2.new(0.45, 0, 0.8, 0); incInput.Position = UDim2.new(0.5, 0, 0.1, 0); incInput.BackgroundColor3 = Color3.fromRGB(50, 50, 50); incInput.Text = tostring(currentIncrement); incInput.TextColor3 = Color3.new(1, 1, 1); incInput.Font = Enum.Font.GothamBold; incInput.TextSize = 10; Instance.new("UICorner", incInput)
 	incInput.FocusLost:Connect(function() local val = tonumber(incInput.Text); if val then currentIncrement = val; saveSettings() else incInput.Text = tostring(currentIncrement) end end)
 
-	local function applyToTarget(targetPart, axis, direction)
-		local delta = currentIncrement * direction; local cur = partMemory[targetPart] or CFrame.new(0, 0, 0); local pos, x, y, z = cur.Position, cur:ToOrientation()
+	local offFrame = Instance.new("Frame", mainFrame); offFrame.Size = UDim2.new(0.425, 0, 0, 30); offFrame.Position = UDim2.new(0.525, 0, 0, 65); offFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30); Instance.new("UICorner", offFrame)
+	Instance.new("TextLabel", offFrame).Size = UDim2.new(0.5, 0, 1, 0); offFrame.TextLabel.Text = "OFF:"; offFrame.TextLabel.TextColor3 = Color3.fromRGB(200, 200, 200); offFrame.TextLabel.BackgroundTransparency = 1; offFrame.TextLabel.Font = Enum.Font.GothamBold; offFrame.TextLabel.TextSize = 8
+	local offInput = Instance.new("TextBox", offFrame); offInput.Size = UDim2.new(0.45, 0, 0.8, 0); offInput.Position = UDim2.new(0.5, 0, 0.1, 0); offInput.BackgroundColor3 = Color3.fromRGB(50, 50, 50); offInput.Text = tostring(currentOffset); offInput.TextColor3 = Color3.new(1, 1, 1); offInput.Font = Enum.Font.GothamBold; offInput.TextSize = 10; Instance.new("UICorner", offInput)
+	offInput.FocusLost:Connect(function() local val = tonumber(offInput.Text); if val then currentOffset = val; saveSettings() else offInput.Text = tostring(currentOffset) end end)
+
+	local function applyToTarget(targetPart, axis, direction, customInc)
+		local delta = (customInc or currentIncrement) * direction; local cur = partMemory[targetPart] or CFrame.new(0, 0, 0); local pos, x, y, z = cur.Position, cur:ToOrientation()
 		if not isRotationMode then
 			if axis == "X" then pos = pos + Vector3.new(delta, 0, 0) elseif axis == "Y" then pos = pos + Vector3.new(0, delta, 0) elseif axis == "Z" then pos = pos + Vector3.new(0, 0, delta) end
 		else local r = math.rad(delta * 50); if axis == "X" then x = x + r elseif axis == "Y" then y = y + r elseif axis == "Z" then z = z + r end end
 		partMemory[targetPart] = CFrame.new(pos) * CFrame.fromOrientation(x, y, z)
 	end
-	local og = 105; local function mBtn(t, x, y, ax, d) createBtn(t, UDim2.new(0.5, x, 0, og + y), UDim2.new(0, 40, 0, 40), mainFrame).MouseButton1Click:Connect(function() local list = moveAllMode and getHeldList() or {getSelectedPart()}; for _, p in ipairs(list) do applyToTarget(p, ax, d) end end) end
+
+	local og = 105; 
+	local function mBtn(t, x, y, ax, d) 
+		createBtn(t, UDim2.new(0.5, x, 0, og + y), UDim2.new(0, 40, 0, 40), mainFrame).MouseButton1Click:Connect(function() 
+			local list = getHeldList()
+			if moveAllMode then
+				for i, p in ipairs(list) do
+					local inc = currentIncrement + (i - 1) * currentOffset
+					applyToTarget(p, ax, d, inc)
+				end
+			else
+				applyToTarget(getSelectedPart(), ax, d)
+			end
+		end) 
+	end
+
 	mBtn("▲", -20, 0, "Z", -1); mBtn("▼", -20, 90, "Z", 1); mBtn("◄", -65, 45, "X", -1); mBtn("►", 25, 45, "X", 1)
-	createBtn("FWD", UDim2.new(0.05, 0, 0, og + 45), UDim2.new(0, 42, 0, 40), mainFrame).MouseButton1Click:Connect(function() local list = moveAllMode and getHeldList() or {getSelectedPart()}; for _, p in ipairs(list) do applyToTarget(p, "Y", 1) end end)
-	createBtn("BCK", UDim2.new(0.95, -42, 0, og + 45), UDim2.new(0, 42, 0, 40), mainFrame).MouseButton1Click:Connect(function() local list = moveAllMode and getHeldList() or {getSelectedPart()}; for _, p in ipairs(list) do applyToTarget(p, "Y", -1) end end)
+
+	createBtn("FWD", UDim2.new(0.05, 0, 0, og + 45), UDim2.new(0, 42, 0, 40), mainFrame).MouseButton1Click:Connect(function() 
+		local list = getHeldList()
+		if moveAllMode then
+			for i, p in ipairs(list) do
+				local inc = currentIncrement + (i - 1) * currentOffset
+				applyToTarget(p, "Y", 1, inc)
+			end
+		else
+			applyToTarget(getSelectedPart(), "Y", 1)
+		end
+	end)
+
+	createBtn("BCK", UDim2.new(0.95, -42, 0, og + 45), UDim2.new(0, 42, 0, 40), mainFrame).MouseButton1Click:Connect(function() 
+		local list = getHeldList()
+		if moveAllMode then
+			for i, p in ipairs(list) do
+				local inc = currentIncrement + (i - 1) * currentOffset
+				applyToTarget(p, "Y", -1, inc)
+			end
+		else
+			applyToTarget(getSelectedPart(), "Y", -1)
+		end
+	end)
 	local flipBtn = createBtn("FLIP", UDim2.new(0.5, -20, 0, og + 45), UDim2.new(0, 40, 0, 40), mainFrame); flipBtn.TextSize = 8
 	flipBtn.MouseButton1Click:Connect(function() local list = moveAllMode and getHeldList() or {getSelectedPart()}; for _, p in ipairs(list) do if p and partMemory[p] then partMemory[p] = partMemory[p] * CFrame.Angles(math.pi, 0, 0) end end end)
 	flipBtn.MouseButton2Click:Connect(function() local list = moveAllMode and getHeldList() or {getSelectedPart()}; for _, p in ipairs(list) do if p and partMemory[p] then partMemory[p] = partMemory[p] * CFrame.Angles(0, 0, math.pi) end end end)
@@ -577,8 +623,8 @@ local function onActivated()
 		local originals, affectedParts = disablePhysics(target); local partHandleAtt = Instance.new("Attachment", handle); partHandleAtt.Name = "GrabAtt_" .. tostring(tick()); heldParts[target] = { OriginalGroups = originals, AffectedParts = affectedParts, TargetAtt = partHandleAtt, Spin = { Enabled = false, Speed = 1, Direction = "Up" }, Orbit = { Enabled = false, Speed = 1, Distance = 5, Type = "Prograde" } }; if not partMemory[target] then partMemory[target] = CFrame.new(0, 0, 0) end
 		applyHighlight(target, true); 
 		local partAtt = Instance.new("Attachment", target); partAtt.Name = "PartGrabAtt"
-		local ap = Instance.new("AlignPosition", target); ap.Name = "GrabPosition"; ap.Attachment0 = partAtt; ap.Attachment1 = partHandleAtt; ap.RigidityEnabled = true
-		local ao = Instance.new("AlignOrientation", target); ao.Name = "GrabOrientation"; ao.Attachment0 = partAtt; ao.Attachment1 = partHandleAtt; ao.RigidityEnabled = true
+		local ap = Instance.new("AlignPosition", target); ap.Name = "GrabPosition"; ap.Attachment0 = partAtt; ap.Attachment1 = partHandleAtt; ap.Responsiveness = 200; ap.MaxForce = math.huge; ap.RigidityEnabled = true
+		local ao = Instance.new("AlignOrientation", target); ao.Name = "GrabOrientation"; ao.Attachment0 = partAtt; ao.Attachment1 = partHandleAtt; ao.Responsiveness = 200; ao.MaxTorque = math.huge; ao.RigidityEnabled = true
 		createEditGui(); if activeGui then updateSelectionDisplay() end 
 	end
 end

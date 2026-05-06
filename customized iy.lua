@@ -4336,6 +4336,10 @@ CMDs[#CMDs + 1] = {NAME = 'notify [text]', DESC = 'Sends you a notification with
 CMDs[#CMDs + 1] = {NAME = 'lastcommand / lastcmd', DESC = 'Executes the previous command used'}
 CMDs[#CMDs + 1] = {NAME = 'exit', DESC = 'Kills roblox process'}
 CMDs[#CMDs + 1] = {NAME = '', DESC = ''}
+CMDs[#CMDs + 1] = {NAME = 'antifling2 [on/off]', DESC = 'Continuously resets the velocity of all other players to 0.'}
+CMDs[#CMDs + 1] = {NAME = 'loop [cmd] [delay]', DESC = 'Loops a command (default delay 1s)'}
+CMDs[#CMDs + 1] = {NAME = 'unloop [cmd]', DESC = 'Stops looping a command'}
+CMDs[#CMDs + 1] = {NAME = 'loops', DESC = 'Lists all active loops'}
 CMDs[#CMDs + 1] = {NAME = 'noclip', DESC = 'Go through objects'}
 CMDs[#CMDs + 1] = {NAME = 'unnoclip / clip', DESC = 'Disables noclip'}
 CMDs[#CMDs + 1] = {NAME = 'fly [speed]', DESC = 'Makes you fly'}
@@ -7063,6 +7067,41 @@ addcmd('unfly',{'nofly','novfly','unvehiclefly','novehiclefly','unvfly'},functio
 	if not IsOnMobile then NOFLY() else unmobilefly(speaker) end
 end)
 
+addcmd('antifling2',{'af2','antiflingv2'},function(args, speaker)
+    local RunService = game:GetService("RunService")
+    
+    if _G.AntiFling2Connection then
+        _G.AntiFling2Connection:Disconnect()
+        _G.AntiFling2Connection = nil
+    end
+
+    local state = args[1] or "toggle"
+    if state:lower() == "off" then
+        notify("Anti-Fling 2", "Disabled")
+        return
+    end
+
+    if state:lower() == "on" or not _G.AntiFling2Connection then
+        _G.AntiFling2Connection = RunService.Heartbeat:Connect(function()
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= speaker and player.Character then
+                    for _, part in pairs(player.Character:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            pcall(function()
+                                part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                                part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                                part.Velocity = Vector3.new(0, 0, 0)
+                                part.RotVelocity = Vector3.new(0, 0, 0)
+                            end)
+                        end
+                    end
+                end
+            end
+        end)
+        notify("Anti-Fling 2", "Enabled")
+    end
+end)
+
 addcmd('vfly',{'vehiclefly'},function(args, speaker)
 	if not IsOnMobile then
 		NOFLY()
@@ -8638,8 +8677,75 @@ addcmd("promptr15", {}, function(args, speaker)
 	promptNewRig(speaker, "R15")
 end)
 
-addcmd("wallwalk", {"walkonwalls"}, function(args, speaker)
+addcmd('wallwalk', {"walkonwalls"}, function(args, speaker)
     loadstring(game:HttpGet("https://raw.githubusercontent.com/infyiff/backup/main/wallwalker.lua"))()
+end)
+
+local activeLoops = {}
+addcmd('loop',{},function(args, speaker)
+    local cmdName = args[1]
+    if not cmdName then return notify("Loop Error", "Please provide a command name.") end
+    
+    local delayTime = tonumber(args[2]) or 1
+    if delayTime < 0.1 then delayTime = 0.1 end
+    
+    local cmdString = ""
+    for i = 1, #args do
+        cmdString = cmdString .. args[i] .. (i == #args and "" or " ")
+    end
+    -- Remove the delay from the cmdString if it was provided
+    if tonumber(args[2]) then
+        cmdString = cmdName .. " "
+        for i = 3, #args do
+            cmdString = cmdString .. args[i] .. (i == #args and "" or " ")
+        end
+    end
+    cmdString = cmdString:gsub("%s+$","")
+
+    if activeLoops[cmdName] then
+        activeLoops[cmdName].Enabled = false
+        task.wait(0.1)
+    end
+
+    activeLoops[cmdName] = {Enabled = true, Command = cmdString}
+    notify("Loop Started", "Looping: " .. cmdString .. " every " .. delayTime .. "s")
+    
+    task.spawn(function()
+        while activeLoops[cmdName] and activeLoops[cmdName].Enabled do
+            execCmd(activeLoops[cmdName].Command, speaker)
+            task.wait(delayTime)
+        end
+        activeLoops[cmdName] = nil
+    end)
+end)
+
+addcmd('unloop',{},function(args, speaker)
+    local cmdName = args[1]
+    if not cmdName then
+        for name, loop in pairs(activeLoops) do
+            loop.Enabled = false
+        end
+        notify("Loop Stopped", "All loops stopped.")
+    elseif activeLoops[cmdName] then
+        activeLoops[cmdName].Enabled = false
+        notify("Loop Stopped", "Stopped looping: " .. cmdName)
+    else
+        notify("Loop Error", "No active loop found for: " .. cmdName)
+    end
+end)
+
+addcmd('loops',{},function(args, speaker)
+    local list = {}
+    for name, loop in pairs(activeLoops) do
+        if loop.Enabled then
+            table.insert(list, name .. " (" .. loop.Command .. ")")
+        end
+    end
+    if #list > 0 then
+        notify("Active Loops", table.concat(list, "\n"))
+    else
+        notify("Active Loops", "No active loops.")
+    end
 end)
 
 addcmd('age',{},function(args, speaker)
